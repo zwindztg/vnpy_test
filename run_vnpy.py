@@ -1,5 +1,6 @@
 import json
 import platform
+import shutil
 from pathlib import Path
 
 
@@ -50,8 +51,23 @@ def ensure_vnpy_settings() -> None:
         )
 
 
+def sync_local_strategies() -> None:
+    """Copy repo strategies into ~/.vntrader/strategies for vnpy discovery."""
+    project_strategy_dir = Path(__file__).resolve().parent / "strategies"
+    if not project_strategy_dir.exists():
+        return
+
+    trader_strategy_dir = Path.home() / ".vntrader" / "strategies"
+    trader_strategy_dir.mkdir(parents=True, exist_ok=True)
+
+    for source in project_strategy_dir.glob("*.py"):
+        target = trader_strategy_dir / source.name
+        shutil.copy2(source, target)
+
+
 def main() -> int:
     ensure_vnpy_settings()
+    sync_local_strategies()
 
     from vnpy.trader.engine import MainEngine
     from vnpy.trader.ui import MainWindow, create_qapp

@@ -1,0 +1,8 @@
+{
+  "database.name": "sqlite",
+  "database.database": "database.db",
+  "datafeed.name": "rqdata",
+  "datafeed.username": "",
+  "datafeed.password": ""
+}
+

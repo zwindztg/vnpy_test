@@ -1,0 +1,7 @@
+vnpy==4.3.0
+vnpy_ctastrategy==1.4.1
+vnpy_ctabacktester==1.3.0
+vnpy_datamanager==1.2.0
+vnpy_sqlite==1.1.3
+vnpy_rqdata==3.2.14.1
+

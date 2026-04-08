@@ -52,17 +52,25 @@ def ensure_vnpy_settings() -> None:
 
 
 def sync_local_strategies() -> None:
-    """Copy repo strategies into ~/.vntrader/strategies for vnpy discovery."""
+    """Copy repo strategies into vnpy discovery folders."""
     project_strategy_dir = Path(__file__).resolve().parent / "strategies"
     if not project_strategy_dir.exists():
         return
 
-    trader_strategy_dir = Path.home() / ".vntrader" / "strategies"
-    trader_strategy_dir.mkdir(parents=True, exist_ok=True)
+    # vn.py appends TRADER_DIR to sys.path. With the default startup flow this
+    # resolves to the user's home directory, while runtime data stays under
+    # ~/.vntrader. Sync to both locations so CTA strategy discovery works.
+    target_dirs = [
+        Path.home() / "strategies",
+        Path.home() / ".vntrader" / "strategies",
+    ]
 
-    for source in project_strategy_dir.glob("*.py"):
-        target = trader_strategy_dir / source.name
-        shutil.copy2(source, target)
+    for target_dir in target_dirs:
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        for source in project_strategy_dir.glob("*.py"):
+            target = target_dir / source.name
+            shutil.copy2(source, target)
 
 
 def main() -> int:

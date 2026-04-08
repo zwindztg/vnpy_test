@@ -23,6 +23,34 @@ python run_vnpy.py
 
 首次启动时，`vnpy` 会在 `~/.vntrader/` 下生成配置和日志目录。
 
+## 策略学习示例
+
+仓库已经包含一个本地 CTA 策略示例：
+
+- `strategies/LessonDoubleMaStrategy`
+
+这是一个最小的双均线交叉策略，适合拿来理解 `vnpy` CTA 策略的基本结构：
+
+- `on_init`: 初始化指标和历史数据
+- `on_tick`: 把 Tick 更新交给 `BarGenerator`
+- `on_bar`: 计算快慢均线并生成买卖信号
+- `on_trade`: 成交后刷新界面变量
+
+`vnpy_ctastrategy` 会自动扫描当前工作目录下的 `strategies/`，所以这个策略在你启动 [run_vnpy.py](/Users/zezhang/Documents/codex/vnpy/run_vnpy.py) 后，应该能在 CTA 策略模块里直接看到。
+
+## 回测这个示例策略
+
+1. 启动界面：`python run_vnpy.py`
+2. 打开 `CTA回测`
+3. 选择策略类 `LessonDoubleMaStrategy`
+4. 选择已经入库的合约和周期
+5. 先用默认参数跑通，再修改：
+   - `fast_window=10`
+   - `slow_window=20`
+   - `fixed_size=1`
+
+如果本地还没有历史数据，可以先用 `数据管理` 导入，或者配置 `RQData` 后再下载。
+
 ## 重新安装依赖
 
 如果你以后要在新机器重建环境，可以使用：
@@ -42,3 +70,11 @@ python -m pip install -r requirements.txt --index-url=https://pypi.doubanio.com/
 ```
 
 然后填入你自己的 `RQData` 用户名和密码。
+
+## 下一步建议
+
+如果你准备系统学量化编程，建议按这个顺序往下走：
+
+1. 先跑通 `LessonDoubleMaStrategy` 回测，理解事件驱动和策略生命周期
+2. 再把策略改成带止损止盈版本
+3. 然后学习如何接入你实际要交易的接口和行情数据

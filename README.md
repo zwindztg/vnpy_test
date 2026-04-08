@@ -13,6 +13,14 @@
   - `vnpy_sqlite`
   - `vnpy_rqdata`
 
+首次运行 [run_vnpy.py](/Users/zezhang/Documents/codex/vnpy/run_vnpy.py) 时，脚本会自动补齐 `~/.vntrader/vt_setting.json` 的缺省配置：
+
+- macOS 默认字体会改成 `PingFang SC`
+- 默认数据库仍然使用 `sqlite`
+- 默认数据服务会使用仓库内置的本地学习模式 `localdemo`
+
+这样首次启动不会因为没有配置 `RQData` 而误以为程序出错。
+
 ## 本地启动
 
 ```bash
@@ -70,6 +78,20 @@ python -m pip install -r requirements.txt --index-url=https://pypi.doubanio.com/
 ```
 
 然后填入你自己的 `RQData` 用户名和密码。
+
+如果你想切换到 `RQData`，把 `~/.vntrader/vt_setting.json` 中的：
+
+```json
+"datafeed.name": "localdemo"
+```
+
+改成：
+
+```json
+"datafeed.name": "rqdata"
+```
+
+并补全 `datafeed.username`、`datafeed.password`。
 
 ## 下一步建议
 

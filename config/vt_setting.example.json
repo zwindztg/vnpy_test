@@ -1,8 +1,8 @@
 {
   "database.name": "sqlite",
   "database.database": "database.db",
-  "datafeed.name": "rqdata",
+  "datafeed.name": "akshare",
+  "datafeed.adjust": "qfq",
   "datafeed.username": "",
   "datafeed.password": ""
 }
-

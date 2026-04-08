@@ -36,6 +36,7 @@ def ensure_vnpy_settings() -> None:
         "datafeed.name": "localdemo",
         "datafeed.username": "",
         "datafeed.password": "",
+        "datafeed.adjust": "qfq",
     }
 
     changed = False
@@ -73,9 +74,31 @@ def sync_local_strategies() -> None:
             shutil.copy2(source, target)
 
 
+def sync_local_packages() -> None:
+    """Copy repo-local vnpy extension packages into vnpy import paths."""
+    project_dir = Path(__file__).resolve().parent
+    package_names = ["vnpy_localdemo", "vnpy_akshare"]
+    target_dirs = [Path.home(), Path.home() / ".vntrader"]
+
+    for package_name in package_names:
+        source_dir = project_dir / package_name
+        if not source_dir.exists():
+            continue
+
+        for target_base in target_dirs:
+            target_dir = target_base / package_name
+            shutil.copytree(
+                source_dir,
+                target_dir,
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+            )
+
+
 def main() -> int:
     ensure_vnpy_settings()
     sync_local_strategies()
+    sync_local_packages()
 
     from vnpy.trader.engine import MainEngine
     from vnpy.trader.ui import MainWindow, create_qapp

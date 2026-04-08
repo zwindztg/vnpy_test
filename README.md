@@ -21,6 +21,7 @@
 - 仓库里的 `strategies/*.py` 会自动同步到 `~/strategies/` 和 `~/.vntrader/strategies/`
 
 这样首次启动不会因为没有配置 `RQData` 而误以为程序出错。
+在 `localdemo` 模式下，`CTA回测` 的“下载数据”按钮会为 `1m`、`1h`、`d` 周期生成一份离线示例K线，用来学习回测流程。
 
 ## 本地启动
 

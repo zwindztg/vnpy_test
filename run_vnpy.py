@@ -1,7 +1,104 @@
 import json
 import platform
 import shutil
+from datetime import date, timedelta
 from pathlib import Path
+
+
+A_SHARE_EXCHANGES: tuple[str, ...] = (".SSE", ".SZSE", ".BSE")
+A_SHARE_BACKTEST_DEFAULTS: dict[str, object] = {
+    "class_name": "LessonAShareLongOnlyStrategy",
+    "vt_symbol": "000001.SZSE",
+    "interval": "d",
+    "rate": 0.0005,
+    "slippage": 0.01,
+    "size": 1,
+    "pricetick": 0.01,
+    "capital": 100000,
+}
+FUTURES_STYLE_BACKTEST_DEFAULTS: dict[str, float] = {
+    "rate": 0.000025,
+    "slippage": 0.2,
+    "size": 300,
+    "pricetick": 0.2,
+    "capital": 1000000,
+}
+
+
+def patch_qt_stylesheet(qapp) -> None:
+    """Apply small macOS-specific fixes for qdarkstyle combo boxes."""
+    if platform.system() != "Darwin":
+        return
+
+    qapp.setStyleSheet(
+        qapp.styleSheet()
+        + """
+QComboBox {
+    min-width: 6em;
+    color: #D8E1EA;
+}
+QComboBox QAbstractItemView {
+    min-width: 6em;
+    color: #D8E1EA;
+    background-color: #19232D;
+    selection-color: #FFFFFF;
+}
+"""
+    )
+
+
+def load_json_dict(path: Path) -> dict:
+    """Read a JSON object from disk and fall back to an empty dict."""
+    if not path.exists():
+        return {}
+
+    try:
+        current = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+    if isinstance(current, dict):
+        return current
+    return {}
+
+
+def write_json_dict(path: Path, data: dict) -> None:
+    """Write a JSON object to disk using readable formatting."""
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def is_a_share_symbol(vt_symbol: str) -> bool:
+    """Return whether the local symbol points to a mainland A-share exchange."""
+    return vt_symbol.endswith(A_SHARE_EXCHANGES)
+
+
+def is_same_number(value: object, expected: float) -> bool:
+    """Compare persisted numeric values without caring about int/float strings."""
+    try:
+        return abs(float(value) - expected) < 1e-9
+    except (TypeError, ValueError):
+        return False
+
+
+def should_reset_backtester_settings(current: dict) -> bool:
+    """Reset CTA backtester defaults when they still look like futures presets."""
+    if not current:
+        return True
+
+    vt_symbol = str(current.get("vt_symbol", "")).strip()
+    if vt_symbol in {"", "IF88.CFFEX"}:
+        return True
+
+    if is_a_share_symbol(vt_symbol):
+        return all(
+            is_same_number(current.get(key), expected)
+            for key, expected in FUTURES_STYLE_BACKTEST_DEFAULTS.items()
+        )
+
+    return False
 
 
 def ensure_vnpy_settings() -> None:
@@ -10,15 +107,7 @@ def ensure_vnpy_settings() -> None:
     trader_dir.mkdir(parents=True, exist_ok=True)
 
     setting_path = trader_dir / "vt_setting.json"
-    if setting_path.exists():
-        try:
-            current = json.loads(setting_path.read_text(encoding="utf-8"))
-            if not isinstance(current, dict):
-                current = {}
-        except json.JSONDecodeError:
-            current = {}
-    else:
-        current = {}
+    current = load_json_dict(setting_path)
 
     system = platform.system()
     if system == "Darwin":
@@ -46,10 +135,33 @@ def ensure_vnpy_settings() -> None:
             changed = True
 
     if changed or not setting_path.exists():
-        setting_path.write_text(
-            json.dumps(current, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        write_json_dict(setting_path, current)
+
+
+def ensure_backtester_settings() -> None:
+    """Seed CTA backtesting defaults that are friendlier to A-share cash study."""
+    trader_dir = Path.home() / ".vntrader"
+    trader_dir.mkdir(parents=True, exist_ok=True)
+
+    setting_path = trader_dir / "cta_backtester_setting.json"
+    current = load_json_dict(setting_path)
+
+    defaults = dict(A_SHARE_BACKTEST_DEFAULTS)
+    defaults["start"] = (date.today() - timedelta(days=365)).isoformat()
+
+    changed = False
+
+    if should_reset_backtester_settings(current):
+        current = defaults
+        changed = True
+    else:
+        for key, value in defaults.items():
+            if key not in current:
+                current[key] = value
+                changed = True
+
+    if changed or not setting_path.exists():
+        write_json_dict(setting_path, current)
 
 
 def sync_local_strategies() -> None:
@@ -97,6 +209,7 @@ def sync_local_packages() -> None:
 
 def main() -> int:
     ensure_vnpy_settings()
+    ensure_backtester_settings()
     sync_local_strategies()
     sync_local_packages()
 
@@ -107,6 +220,7 @@ def main() -> int:
     from vnpy_datamanager import DataManagerApp
 
     qapp = create_qapp("vnpy_test")
+    patch_qt_stylesheet(qapp)
 
     main_engine = MainEngine()
     main_engine.add_app(CtaStrategyApp)

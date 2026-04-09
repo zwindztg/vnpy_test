@@ -14,7 +14,7 @@
   - `vnpy_rqdata`
   - `akshare`
 
-首次运行 [run_vnpy.py](/Users/zezhang/Documents/codex/vnpy/run_vnpy.py) 时，脚本会自动补齐 `~/.vntrader/vt_setting.json` 的缺省配置：
+首次运行 [run_vnpy.py](/Users/zezhang/Documents/codex/vnpy_test/run_vnpy.py) 时，脚本会自动补齐 `~/.vntrader/vt_setting.json` 的缺省配置：
 
 - macOS 默认字体会改成 `PingFang SC`
 - 默认数据库仍然使用 `sqlite`
@@ -51,7 +51,7 @@
 ## 本地启动
 
 ```bash
-cd /Users/zezhang/Documents/codex/vnpy
+cd /Users/zezhang/Documents/codex/vnpy_test
 source .venv/bin/activate
 python run_vnpy.py
 ```
@@ -63,6 +63,7 @@ python run_vnpy.py
 仓库已经包含一个本地 CTA 策略示例：
 
 - `strategies/LessonDoubleMaStrategy`
+- `strategies/LessonAShareLongOnlyStrategy`
 
 这是一个最小的双均线交叉策略，适合拿来理解 `vnpy` CTA 策略的基本结构：
 
@@ -71,18 +72,24 @@ python run_vnpy.py
 - `on_bar`: 计算快慢均线并生成买卖信号
 - `on_trade`: 成交后刷新界面变量
 
-`vnpy_ctastrategy` 会自动扫描当前工作目录下的 `strategies/`，所以这个策略在你启动 [run_vnpy.py](/Users/zezhang/Documents/codex/vnpy/run_vnpy.py) 后，应该能在 CTA 策略模块里直接看到。
+`LessonAShareLongOnlyStrategy` 是专门给 A 股现货学习准备的长仓版示例：
+
+- 只会开多和平多，不会做空
+- 默认下单数量是 `100` 股，符合 A 股一手
+- 更适合配合 `000001.SZSE` 的 `d` 周期做入门回测
+
+`vnpy_ctastrategy` 会自动扫描当前工作目录下的 `strategies/`，所以这些策略在你启动 [run_vnpy.py](/Users/zezhang/Documents/codex/vnpy_test/run_vnpy.py) 后，应该能在 CTA 策略模块里直接看到。
 
 ## 回测这个示例策略
 
 1. 启动界面：`python run_vnpy.py`
 2. 打开 `CTA回测`
-3. 选择策略类 `LessonDoubleMaStrategy`
+3. 选择策略类 `LessonAShareLongOnlyStrategy`
 4. 选择已经入库的合约和周期
 5. 先用默认参数跑通，再修改：
-   - `fast_window=10`
+   - `fast_window=5`
    - `slow_window=20`
-   - `fixed_size=1`
+   - `fixed_size=100`
 
 如果本地还没有历史数据，可以先用 `数据管理` 导入，或者配置 `AkShare` / `RQData` 后再下载。
 

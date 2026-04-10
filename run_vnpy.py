@@ -1,11 +1,15 @@
 import json
 import platform
 import shutil
-from datetime import date, timedelta
+import traceback
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 
 A_SHARE_EXCHANGES: tuple[str, ...] = (".SSE", ".SZSE", ".BSE")
+A_SHARE_DATABASE_MAX_MB: int = 128
+A_SHARE_MINUTE_RETENTION_DAYS: int = 14
+A_SHARE_HOUR_RETENTION_DAYS: int = 365
 A_SHARE_BACKTEST_DEFAULTS: dict[str, object] = {
     "class_name": "LessonAShareLongOnlyStrategy",
     "vt_symbol": "000001.SZSE",
@@ -101,10 +105,29 @@ def should_reset_backtester_settings(current: dict) -> bool:
     return False
 
 
-def ensure_vnpy_settings() -> None:
-    """Create a sane first-run vnpy config without overwriting user choices."""
+def get_trader_dir() -> Path:
+    """返回与 vn.py 内部一致的配置目录。"""
+    # 如果当前工作目录下已经有 .vntrader，就跟随 vn.py 使用本地目录。
+    local_trader_dir = Path.cwd() / ".vntrader"
+    if local_trader_dir.exists():
+        return local_trader_dir
+
     trader_dir = Path.home() / ".vntrader"
     trader_dir.mkdir(parents=True, exist_ok=True)
+    return trader_dir
+
+
+def get_database_path(trader_dir: Path) -> Path:
+    """根据本地配置返回数据库文件路径。"""
+    setting_path = trader_dir / "vt_setting.json"
+    current = load_json_dict(setting_path)
+    database_name = str(current.get("database.database") or "database.db")
+    return trader_dir / database_name
+
+
+def ensure_vnpy_settings() -> None:
+    """Create a sane first-run vnpy config without overwriting user choices."""
+    trader_dir = get_trader_dir()
 
     setting_path = trader_dir / "vt_setting.json"
     current = load_json_dict(setting_path)
@@ -140,8 +163,7 @@ def ensure_vnpy_settings() -> None:
 
 def ensure_backtester_settings() -> None:
     """Seed CTA backtesting defaults that are friendlier to A-share cash study."""
-    trader_dir = Path.home() / ".vntrader"
-    trader_dir.mkdir(parents=True, exist_ok=True)
+    trader_dir = get_trader_dir()
 
     setting_path = trader_dir / "cta_backtester_setting.json"
     current = load_json_dict(setting_path)
@@ -162,6 +184,325 @@ def ensure_backtester_settings() -> None:
 
     if changed or not setting_path.exists():
         write_json_dict(setting_path, current)
+
+
+def cleanup_database_storage() -> None:
+    """启动时做轻量数据库清理，避免库体积无限增长。"""
+    from vnpy.trader.constant import Interval
+    from vnpy.trader.database import get_database
+
+    trader_dir = get_trader_dir()
+    database_path = get_database_path(trader_dir)
+    if not database_path.exists():
+        return
+
+    database = get_database()
+    minute_cutoff = datetime.combine(
+        date.today() - timedelta(days=A_SHARE_MINUTE_RETENTION_DAYS),
+        time.min,
+    )
+    hour_cutoff = datetime.combine(
+        date.today() - timedelta(days=A_SHARE_HOUR_RETENTION_DAYS),
+        time.min,
+    )
+
+    # 优先删除“已经很久没更新”的分钟和小时数据组。
+    for overview in list(database.get_bar_overview()):
+        if overview.end is None:
+            continue
+
+        if overview.interval == Interval.MINUTE and overview.end < minute_cutoff:
+            deleted = database.delete_bar_data(
+                overview.symbol,
+                overview.exchange,
+                overview.interval,
+            )
+            if deleted:
+                print(f"启动清理旧1m数据：{overview.symbol}.{overview.exchange.value} 删除{deleted}条")
+
+        elif overview.interval == Interval.HOUR and overview.end < hour_cutoff:
+            deleted = database.delete_bar_data(
+                overview.symbol,
+                overview.exchange,
+                overview.interval,
+            )
+            if deleted:
+                print(f"启动清理旧1h数据：{overview.symbol}.{overview.exchange.value} 删除{deleted}条")
+
+    max_size_bytes = A_SHARE_DATABASE_MAX_MB * 1024 * 1024
+    if not database_path.exists() or database_path.stat().st_size <= max_size_bytes:
+        return
+
+    # 如果库仍然偏大，再额外清理分钟和 tick 数据，但保留日线数据。
+    for overview in list(database.get_bar_overview()):
+        if overview.interval == Interval.MINUTE:
+            deleted = database.delete_bar_data(
+                overview.symbol,
+                overview.exchange,
+                overview.interval,
+            )
+            if deleted:
+                print(f"压缩数据库体积：删除1m数据 {overview.symbol}.{overview.exchange.value} {deleted}条")
+
+    for overview in list(database.get_tick_overview()):
+        deleted = database.delete_tick_data(
+            overview.symbol,
+            overview.exchange,
+        )
+        if deleted:
+            print(f"压缩数据库体积：删除Tick数据 {overview.symbol}.{overview.exchange.value} {deleted}条")
+
+
+def patch_backtester_engine() -> None:
+    """给 CTA 回测引擎增加自动补数和定向清理能力。"""
+    from vnpy.trader.constant import Interval
+    from vnpy.trader.database import convert_tz
+    from vnpy.trader.object import BarData, ContractData, HistoryRequest, TickData
+    from vnpy.trader.utility import extract_vt_symbol
+    from vnpy_ctabacktester.engine import (
+        APP_NAME,
+        EVENT_BACKTESTER_BACKTESTING_FINISHED,
+        BacktesterEngine,
+        Event,
+    )
+    from vnpy_ctastrategy import CtaTemplate
+    from vnpy_ctastrategy.backtesting import BacktestingEngine, BacktestingMode
+
+    if getattr(BacktesterEngine, "_vnpy_test_patched", False):
+        return
+
+    def normalize_db_datetime(dt: datetime) -> datetime:
+        """把时间统一转换到数据库使用的比较口径。"""
+        if dt.tzinfo is None:
+            return dt
+        return convert_tz(dt)
+
+    def find_bar_overview(self, vt_symbol: str, interval: str):
+        """查找当前品种和周期在本地数据库里的汇总信息。"""
+        symbol, exchange = extract_vt_symbol(vt_symbol)
+        target_interval = Interval(interval)
+
+        for overview in self.database.get_bar_overview():
+            if (
+                overview.symbol == symbol
+                and overview.exchange == exchange
+                and overview.interval == target_interval
+            ):
+                return overview
+        return None
+
+    def query_history_from_source(
+        self,
+        vt_symbol: str,
+        interval: str,
+        start: datetime,
+        end: datetime,
+    ) -> tuple[str | None, object | None, object | None, list[BarData] | list[TickData]]:
+        """从在线数据源查询指定品种和周期的历史数据。"""
+        try:
+            symbol, exchange = extract_vt_symbol(vt_symbol)
+        except ValueError:
+            self.write_log(f"{vt_symbol}解析失败，请检查交易所后缀")
+            return None, None, None, []
+
+        req: HistoryRequest = HistoryRequest(
+            symbol=symbol,
+            exchange=exchange,
+            interval=Interval(interval),
+            start=start,
+            end=end,
+        )
+
+        if interval == Interval.TICK.value:
+            tick_data: list[TickData] = self.datafeed.query_tick_history(req, self.write_log)
+            return symbol, exchange, None, tick_data
+
+        contract: ContractData | None = self.main_engine.get_contract(vt_symbol)
+        if contract and contract.history_data:
+            bar_data: list[BarData] = self.main_engine.query_history(req, contract.gateway_name)
+        else:
+            bar_data = self.datafeed.query_bar_history(req, self.write_log)
+
+        return symbol, exchange, Interval(interval), bar_data
+
+    def refresh_history_cache(
+        self,
+        vt_symbol: str,
+        interval: str,
+        start: datetime,
+        end: datetime,
+        reason: str,
+    ) -> bool:
+        """重新下载并覆盖当前品种同周期的本地缓存。"""
+        self.write_log(f"{vt_symbol}-{interval}{reason}")
+
+        try:
+            symbol, exchange, interval_enum, data = query_history_from_source(
+                self,
+                vt_symbol,
+                interval,
+                start,
+                end,
+            )
+            if not symbol or not exchange:
+                return False
+
+            if not data:
+                self.write_log(f"数据下载失败，无法获取{vt_symbol}的历史数据")
+                return False
+
+            if interval == Interval.TICK.value:
+                deleted = self.database.delete_tick_data(symbol, exchange)
+                if deleted:
+                    self.write_log(f"{vt_symbol}-tick已删除旧缓存：{deleted}条")
+                self.database.save_tick_data(data)
+            else:
+                deleted = self.database.delete_bar_data(symbol, exchange, interval_enum)
+                if deleted:
+                    self.write_log(f"{vt_symbol}-{interval}已删除旧缓存：{deleted}条")
+                self.database.save_bar_data(data)
+
+            self.write_log(f"{vt_symbol}-{interval}历史数据下载完成")
+            return True
+        except Exception:
+            msg = "数据下载失败，触发异常：\n{}".format(traceback.format_exc())
+            self.write_log(msg)
+            return False
+
+    def ensure_history_for_backtest(
+        self,
+        vt_symbol: str,
+        interval: str,
+        start: datetime,
+        end: datetime,
+    ) -> bool:
+        """回测前检查本地数据，不够时自动联网补数。"""
+        if interval == Interval.TICK.value:
+            return refresh_history_cache(
+                self,
+                vt_symbol,
+                interval,
+                start,
+                end,
+                "回测前自动下载Tick历史数据",
+            )
+
+        overview = find_bar_overview(self, vt_symbol, interval)
+        start_db = normalize_db_datetime(start)
+        end_db = normalize_db_datetime(end)
+
+        # UI 里按日期选择回测区间，这里按日期覆盖范围判断是否需要重下。
+        if (
+            overview
+            and overview.start
+            and overview.end
+            and overview.start.date() <= start_db.date()
+            and overview.end.date() >= end_db.date()
+        ):
+            return True
+
+        return refresh_history_cache(
+            self,
+            vt_symbol,
+            interval,
+            start,
+            end,
+            "回测前发现本地历史数据不足，开始自动补数",
+        )
+
+    def patched_run_backtesting(
+        self,
+        class_name: str,
+        vt_symbol: str,
+        interval: str,
+        start: datetime,
+        end: datetime,
+        rate: float,
+        slippage: float,
+        size: int,
+        pricetick: float,
+        capital: int,
+        setting: dict,
+    ) -> None:
+        """运行回测，必要时先自动补齐本地历史数据。"""
+        self.result_df = None
+        self.result_statistics = None
+
+        engine: BacktestingEngine = self.backtesting_engine
+        engine.clear_data()
+
+        if interval == Interval.TICK.value:
+            mode: BacktestingMode = BacktestingMode.TICK
+        else:
+            mode = BacktestingMode.BAR
+
+        engine.set_parameters(
+            vt_symbol=vt_symbol,
+            interval=interval,
+            start=start,
+            end=end,
+            rate=rate,
+            slippage=slippage,
+            size=size,
+            pricetick=pricetick,
+            capital=capital,
+            mode=mode,
+        )
+
+        strategy_class: type[CtaTemplate] = self.classes[class_name]
+        engine.add_strategy(strategy_class, setting)
+
+        if not ensure_history_for_backtest(self, vt_symbol, interval, start, end):
+            self.write_log("策略回测失败，历史数据自动补数失败")
+            self.thread = None
+            return
+
+        engine.load_data()
+        if not engine.history_data:
+            self.write_log("策略回测失败，历史数据为空")
+            self.thread = None
+            return
+
+        try:
+            engine.run_backtesting()
+        except Exception:
+            msg = "策略回测失败，触发异常：\n{}".format(traceback.format_exc())
+            self.write_log(msg)
+            self.thread = None
+            return
+
+        self.result_df = engine.calculate_result()
+        self.result_statistics = engine.calculate_statistics(output=False)
+        self.thread = None
+
+        event: Event = Event(EVENT_BACKTESTER_BACKTESTING_FINISHED)
+        self.event_engine.put(event)
+
+    def patched_run_downloading(
+        self,
+        vt_symbol: str,
+        interval: str,
+        start: datetime,
+        end: datetime,
+    ) -> None:
+        """执行手动下载时，先定向清掉当前品种同周期旧缓存。"""
+        refresh_history_cache(
+            self,
+            vt_symbol,
+            interval,
+            start,
+            end,
+            "开始下载历史数据",
+        )
+        self.thread = None
+
+    BacktesterEngine.find_bar_overview = find_bar_overview
+    BacktesterEngine.query_history_from_source = query_history_from_source
+    BacktesterEngine.refresh_history_cache = refresh_history_cache
+    BacktesterEngine.ensure_history_for_backtest = ensure_history_for_backtest
+    BacktesterEngine.run_backtesting = patched_run_backtesting
+    BacktesterEngine.run_downloading = patched_run_downloading
+    BacktesterEngine._vnpy_test_patched = True
 
 
 def sync_local_strategies() -> None:
@@ -210,6 +551,7 @@ def sync_local_packages() -> None:
 def main() -> int:
     ensure_vnpy_settings()
     ensure_backtester_settings()
+    cleanup_database_storage()
     sync_local_strategies()
     sync_local_packages()
 
@@ -218,6 +560,8 @@ def main() -> int:
     from vnpy_ctabacktester import CtaBacktesterApp
     from vnpy_ctastrategy import CtaStrategyApp
     from vnpy_datamanager import DataManagerApp
+
+    patch_backtester_engine()
 
     qapp = create_qapp("vnpy_test")
     patch_qt_stylesheet(qapp)

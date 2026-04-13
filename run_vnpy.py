@@ -1,5 +1,6 @@
 import json
 import platform
+import signal
 import shutil
 import traceback
 from datetime import date, datetime, time, timedelta
@@ -34,11 +35,30 @@ STRATEGY_PARAMETER_LABELS: dict[str, dict[str, str]] = {
         "slow_window": "慢均线周期（整数，默认20）",
         "fixed_size": "每次买入股数（整数，默认100股）",
     },
+    "LessonDonchianAShareStrategy": {
+        "entry_window": "突破观察周期（整数，默认20）",
+        "exit_window": "离场观察周期（整数，默认10）",
+        "fixed_size": "每次买入股数（整数，默认100股）",
+    },
     "LessonDoubleMaStrategy": {
         "fast_window": "快均线周期（整数，默认10）",
         "slow_window": "慢均线周期（整数，默认20）",
         "fixed_size": "每次下单数量（整数，默认1）",
     },
+}
+STRATEGY_DISPLAY_NAMES: dict[str, str] = {
+    "AtrRsiStrategy": "ATR-RSI 策略（AtrRsiStrategy）",
+    "BollChannelStrategy": "布林通道策略（BollChannelStrategy）",
+    "DoubleMaStrategy": "双均线策略（DoubleMaStrategy）",
+    "DualThrustStrategy": "Dual Thrust 策略（DualThrustStrategy）",
+    "KingKeltnerStrategy": "肯特纳通道策略（KingKeltnerStrategy）",
+    "LessonAShareLongOnlyStrategy": "A股长仓学习策略（LessonAShareLongOnlyStrategy）",
+    "LessonDonchianAShareStrategy": "A股唐奇安突破策略（LessonDonchianAShareStrategy）",
+    "LessonDoubleMaStrategy": "双均线教学策略（LessonDoubleMaStrategy）",
+    "MultiSignalStrategy": "多信号策略（MultiSignalStrategy）",
+    "MultiTimeframeStrategy": "多周期策略（MultiTimeframeStrategy）",
+    "TestStrategy": "测试策略（TestStrategy）",
+    "TurtleSignalStrategy": "海龟交易策略（TurtleSignalStrategy）",
 }
 
 
@@ -56,6 +76,48 @@ def normalize_a_share_vt_symbol(vt_symbol: str) -> str:
     }
     normalized_suffix = suffix_map.get(suffix, suffix)
     return f"{symbol}.{normalized_suffix}"
+
+
+def format_backtesting_log_lines(
+    class_name: str,
+    vt_symbol: str,
+    interval: str,
+    start: datetime,
+    end: datetime,
+    rate: float,
+    slippage: float,
+    size: float,
+    pricetick: float,
+    capital: float,
+    setting: dict,
+) -> list[str]:
+    """把本次回测配置整理成适合写入日志的中文摘要。"""
+    display_name = STRATEGY_DISPLAY_NAMES.get(class_name, class_name)
+    parameter_labels = STRATEGY_PARAMETER_LABELS.get(class_name, {})
+
+    lines = [
+        (
+            "本次回测配置："
+            f"策略={display_name}；代码={vt_symbol}；周期={interval}；"
+            f"开始={start.strftime('%Y-%m-%d')}；结束={end.strftime('%Y-%m-%d')}"
+        ),
+        (
+            "回测基础参数："
+            f"手续费率={rate}；滑点={slippage}；合约乘数={size}；"
+            f"价格跳动={pricetick}；回测资金={capital}"
+        ),
+    ]
+
+    if setting:
+        parameter_parts: list[str] = []
+        for key, value in setting.items():
+            label = parameter_labels.get(key, key)
+            parameter_parts.append(f"{label}={value}")
+
+        if parameter_parts:
+            lines.append("策略参数：" + "；".join(parameter_parts))
+
+    return lines
 
 
 def patch_qt_stylesheet(qapp) -> None:
@@ -78,6 +140,19 @@ QComboBox QAbstractItemView {
 }
 """
     )
+
+
+def install_gui_signal_handlers(qapp) -> None:
+    """收到中断信号时，先关闭所有窗口，再退出 Qt 事件循环。"""
+
+    def shutdown_gui(*_) -> None:
+        """把终端里的 Ctrl+C 转成 Qt 的正常关窗流程。"""
+        for widget in qapp.topLevelWidgets():
+            widget.close()
+        qapp.quit()
+
+    signal.signal(signal.SIGINT, shutdown_gui)
+    signal.signal(signal.SIGTERM, shutdown_gui)
 
 
 def load_json_dict(path: Path) -> dict:
@@ -515,6 +590,22 @@ def patch_backtester_engine() -> None:
 
         self.result_df = engine.calculate_result()
         self.result_statistics = engine.calculate_statistics(output=False)
+
+        for log_line in format_backtesting_log_lines(
+            class_name,
+            vt_symbol,
+            interval,
+            start,
+            end,
+            rate,
+            slippage,
+            size,
+            pricetick,
+            capital,
+            setting,
+        ):
+            self.write_log(log_line)
+
         self.thread = None
 
         event: Event = Event(EVENT_BACKTESTER_BACKTESTING_FINISHED)
@@ -549,15 +640,19 @@ def patch_backtester_engine() -> None:
 
 def patch_backtester_manager() -> None:
     """让 CTA 回测界面兼容 SH/SZ/BJ 等常见股票后缀输入。"""
-    from vnpy_ctabacktester.ui.widget import BacktesterManager
+    from vnpy.trader.constant import Exchange
+    from vnpy.trader.database import DB_TZ
+    from vnpy.trader.ui import QtCore
+    from vnpy_ctabacktester.ui.widget import (
+        BacktesterManager,
+        BacktestingSettingEditor,
+        OptimizationSettingEditor,
+    )
 
     if getattr(BacktesterManager, "_vnpy_test_symbol_patched", False):
         return
 
-    original_load_backtesting_setting = BacktesterManager.load_backtesting_setting
-    original_start_backtesting = BacktesterManager.start_backtesting
-    original_start_optimization = BacktesterManager.start_optimization
-    original_start_downloading = BacktesterManager.start_downloading
+    original_edit_strategy_code = BacktesterManager.edit_strategy_code
 
     def sync_symbol_input(self) -> str:
         """把输入框里的股票代码统一成 vn.py 内部格式。"""
@@ -567,31 +662,266 @@ def patch_backtester_manager() -> None:
             self.symbol_line.setText(normalized_symbol)
         return normalized_symbol
 
-    def patched_load_backtesting_setting(self) -> None:
-        """加载本地回测配置后，顺手规范一次股票后缀。"""
-        original_load_backtesting_setting(self)
-        sync_symbol_input(self)
+    def get_current_class_name(self) -> str:
+        """返回当前下拉框真正对应的英文类名。"""
+        current_data = self.class_combo.currentData()
+        if isinstance(current_data, str) and current_data:
+            return current_data
+        return self.class_combo.currentText()
 
-    def patched_start_backtesting(self) -> None:
-        """开始回测前，先规范股票后缀输入。"""
-        sync_symbol_input(self)
-        original_start_backtesting(self)
+    def find_class_index(self, class_name: str) -> int:
+        """根据英文类名查找当前策略下拉框索引。"""
+        for index in range(self.class_combo.count()):
+            item_data = self.class_combo.itemData(index)
+            if item_data == class_name:
+                return index
+        return -1
 
-    def patched_start_optimization(self) -> None:
-        """开始优化前，先规范股票后缀输入。"""
-        sync_symbol_input(self)
-        original_start_optimization(self)
+    def init_strategy_settings(self) -> None:
+        """把策略下拉框改成中文+英文双语显示。"""
+        self.class_names = self.backtester_engine.get_strategy_class_names()
+        self.class_names.sort()
+        self.settings = {}
+        self.class_combo.clear()
 
-    def patched_start_downloading(self) -> None:
+        for class_name in self.class_names:
+            setting: dict = self.backtester_engine.get_default_setting(class_name)
+            self.settings[class_name] = setting
+            display_name = STRATEGY_DISPLAY_NAMES.get(class_name, class_name)
+            self.class_combo.addItem(display_name, class_name)
+
+    def load_backtesting_setting(self) -> None:
+        """加载本地回测配置，并恢复双语策略名显示。"""
+        setting_path = get_trader_dir() / self.setting_filename
+        setting: dict = load_json_dict(setting_path)
+        if not setting:
+            return
+
+        class_name = str(setting.get("class_name", ""))
+        index = find_class_index(self, class_name)
+        if index >= 0:
+            self.class_combo.setCurrentIndex(index)
+
+        vt_symbol = str(setting.get("vt_symbol", ""))
+        if vt_symbol:
+            self.symbol_line.setText(normalize_a_share_vt_symbol(vt_symbol))
+
+        interval = str(setting.get("interval", ""))
+        if interval:
+            interval_index = self.interval_combo.findText(interval)
+            if interval_index >= 0:
+                self.interval_combo.setCurrentIndex(interval_index)
+
+        start_str = str(setting.get("start", ""))
+        if start_str:
+            start_dt = QtCore.QDate.fromString(start_str, "yyyy-MM-dd")
+            self.start_date_edit.setDate(start_dt)
+
+        for key, widget in [
+            ("rate", self.rate_line),
+            ("slippage", self.slippage_line),
+            ("size", self.size_line),
+            ("pricetick", self.pricetick_line),
+            ("capital", self.capital_line),
+        ]:
+            if key in setting:
+                widget.setText(str(setting[key]))
+
+    def save_backtesting_setting(self, data: dict) -> None:
+        """把回测参数保存到本地配置文件。"""
+        setting_path = get_trader_dir() / self.setting_filename
+        write_json_dict(setting_path, data)
+
+    def start_backtesting(self) -> None:
+        """开始回测前，先规范股票后缀并使用英文类名执行。"""
+        class_name = get_current_class_name(self)
+        if not class_name:
+            self.write_log("请选择要回测的策略")
+            return
+
+        vt_symbol = sync_symbol_input(self)
+        interval = self.interval_combo.currentText()
+        start = self.start_date_edit.dateTime().toPython()
+        end = self.end_date_edit.dateTime().toPython()
+        rate = float(self.rate_line.text())
+        slippage = float(self.slippage_line.text())
+        size = float(self.size_line.text())
+        pricetick = float(self.pricetick_line.text())
+        capital = float(self.capital_line.text())
+
+        if "." not in vt_symbol:
+            self.write_log("本地代码缺失交易所后缀，请检查")
+            return
+
+        __, exchange_str = vt_symbol.split(".")
+        if exchange_str not in Exchange.__members__:
+            self.write_log("本地代码的交易所后缀不正确，请检查")
+            return
+
+        save_backtesting_setting(
+            self,
+            {
+                "class_name": class_name,
+                "vt_symbol": vt_symbol,
+                "interval": interval,
+                "start": start.strftime("%Y-%m-%d"),
+                "rate": rate,
+                "slippage": slippage,
+                "size": size,
+                "pricetick": pricetick,
+                "capital": capital,
+            },
+        )
+
+        old_setting: dict = self.settings[class_name]
+        dialog: BacktestingSettingEditor = BacktestingSettingEditor(class_name, old_setting)
+        result_code: int = dialog.exec()
+        if result_code != dialog.DialogCode.Accepted:
+            return
+
+        new_setting: dict = dialog.get_setting()
+        self.settings[class_name] = new_setting
+
+        result = self.backtester_engine.start_backtesting(
+            class_name,
+            vt_symbol,
+            interval,
+            start,
+            end,
+            rate,
+            slippage,
+            size,
+            pricetick,
+            capital,
+            new_setting,
+        )
+
+        if result:
+            self.statistics_monitor.clear_data()
+            self.chart.clear_data()
+
+            self.trade_button.setEnabled(False)
+            self.order_button.setEnabled(False)
+            self.daily_button.setEnabled(False)
+            self.candle_button.setEnabled(False)
+
+            self.trade_dialog.clear_data()
+            self.order_dialog.clear_data()
+            self.daily_dialog.clear_data()
+            self.candle_dialog.clear_data()
+
+    def start_optimization(self) -> None:
+        """开始优化前，先规范股票后缀并使用英文类名执行。"""
+        class_name = get_current_class_name(self)
+        vt_symbol = sync_symbol_input(self)
+        interval = self.interval_combo.currentText()
+        start = self.start_date_edit.dateTime().toPython()
+        end = self.end_date_edit.dateTime().toPython()
+        rate = float(self.rate_line.text())
+        slippage = float(self.slippage_line.text())
+        size = float(self.size_line.text())
+        pricetick = float(self.pricetick_line.text())
+        capital = float(self.capital_line.text())
+
+        parameters: dict = self.settings[class_name]
+        dialog: OptimizationSettingEditor = OptimizationSettingEditor(class_name, parameters)
+        result_code: int = dialog.exec()
+        if result_code != dialog.DialogCode.Accepted:
+            return
+
+        optimization_setting, use_ga, max_workers = dialog.get_setting()
+        self.target_display = dialog.target_display
+
+        self.backtester_engine.start_optimization(
+            class_name,
+            vt_symbol,
+            interval,
+            start,
+            end,
+            rate,
+            slippage,
+            size,
+            pricetick,
+            capital,
+            optimization_setting,
+            use_ga,
+            max_workers,
+        )
+
+        self.result_button.setEnabled(False)
+
+    def start_downloading(self) -> None:
         """下载数据前，先规范股票后缀输入。"""
-        sync_symbol_input(self)
-        original_start_downloading(self)
+        vt_symbol = sync_symbol_input(self)
+        interval = self.interval_combo.currentText()
+        start_date = self.start_date_edit.date()
+        end_date = self.end_date_edit.date()
 
+        start = datetime(
+            start_date.year(),
+            start_date.month(),
+            start_date.day(),
+        )
+        start = start.replace(tzinfo=DB_TZ)
+
+        end = datetime(
+            end_date.year(),
+            end_date.month(),
+            end_date.day(),
+            23,
+            59,
+            59,
+        )
+        end = end.replace(tzinfo=DB_TZ)
+
+        self.backtester_engine.start_downloading(
+            vt_symbol,
+            interval,
+            start,
+            end,
+        )
+
+    def edit_strategy_code(self) -> None:
+        """打开代码编辑器时，使用真实英文类名定位文件。"""
+        class_name = get_current_class_name(self)
+        index = find_class_index(self, class_name)
+        if index >= 0:
+            self.class_combo.setCurrentIndex(index)
+        original_edit_strategy_code(self)
+
+    def reload_strategy_class(self) -> None:
+        """重载策略后，继续保持双语显示。"""
+        current_class_name = get_current_class_name(self)
+        self.backtester_engine.reload_strategy_class()
+        init_strategy_settings(self)
+        index = find_class_index(self, current_class_name)
+        if index >= 0:
+            self.class_combo.setCurrentIndex(index)
+
+    def write_log(self, msg: str) -> None:
+        """写入日志，并在未查看日志区时自动滚动到底部。"""
+        timestamp: str = datetime.now().strftime("%H:%M:%S")
+        msg = f"{timestamp}\t{msg}"
+        self.log_monitor.append(msg)
+
+        # 如果鼠标没有停在日志框上，说明用户大概率不是在翻旧日志，
+        # 这时自动滚到底部，方便直接看到最新输出。
+        if not self.log_monitor.underMouse():
+            scrollbar = self.log_monitor.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+
+    BacktesterManager.get_current_class_name = get_current_class_name
+    BacktesterManager.find_class_index = find_class_index
+    BacktesterManager.init_strategy_settings = init_strategy_settings
     BacktesterManager.sync_symbol_input = sync_symbol_input
-    BacktesterManager.load_backtesting_setting = patched_load_backtesting_setting
-    BacktesterManager.start_backtesting = patched_start_backtesting
-    BacktesterManager.start_optimization = patched_start_optimization
-    BacktesterManager.start_downloading = patched_start_downloading
+    BacktesterManager.load_backtesting_setting = load_backtesting_setting
+    BacktesterManager.save_backtesting_setting = save_backtesting_setting
+    BacktesterManager.start_backtesting = start_backtesting
+    BacktesterManager.start_optimization = start_optimization
+    BacktesterManager.start_downloading = start_downloading
+    BacktesterManager.edit_strategy_code = edit_strategy_code
+    BacktesterManager.reload_strategy_class = reload_strategy_class
+    BacktesterManager.write_log = write_log
     BacktesterManager._vnpy_test_symbol_patched = True
 
 
@@ -708,6 +1038,7 @@ def main() -> int:
 
     qapp = create_qapp("vnpy_test")
     patch_qt_stylesheet(qapp)
+    install_gui_signal_handlers(qapp)
 
     main_engine = MainEngine()
     main_engine.add_app(CtaStrategyApp)

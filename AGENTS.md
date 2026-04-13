@@ -47,6 +47,7 @@
 
 - 仓库内维护 [daily_work.md](/Users/zezhang/Documents/codex/vnpy_test/daily_work.md) 作为开发工作日志。
 - 每次重要 Git 提交后，都应按“具体时间、提交号、提交信息、详细说明”的格式追加记录，方便后续回顾开发过程。
+- 如同一次任务既包含代码/文档改动，又需要补记 `daily_work.md`，默认合并到同一个 Git 提交中完成，不再拆成两个独立提交。
 
 ## 安全规则
 

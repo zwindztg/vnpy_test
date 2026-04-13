@@ -7,12 +7,13 @@ from pathlib import Path
 
 
 A_SHARE_EXCHANGES: tuple[str, ...] = (".SSE", ".SZSE", ".BSE")
+LEGACY_A_SHARE_TEST_SYMBOLS: tuple[str, ...] = ("000001.SZSE",)
 A_SHARE_DATABASE_MAX_MB: int = 128
 A_SHARE_MINUTE_RETENTION_DAYS: int = 14
 A_SHARE_HOUR_RETENTION_DAYS: int = 365
 A_SHARE_BACKTEST_DEFAULTS: dict[str, object] = {
     "class_name": "LessonAShareLongOnlyStrategy",
-    "vt_symbol": "000001.SZSE",
+    "vt_symbol": "601869.SSE",
     "interval": "d",
     "rate": 0.0005,
     "slippage": 0.01,
@@ -27,6 +28,34 @@ FUTURES_STYLE_BACKTEST_DEFAULTS: dict[str, float] = {
     "pricetick": 0.2,
     "capital": 1000000,
 }
+STRATEGY_PARAMETER_LABELS: dict[str, dict[str, str]] = {
+    "LessonAShareLongOnlyStrategy": {
+        "fast_window": "快均线周期（整数，默认5）",
+        "slow_window": "慢均线周期（整数，默认20）",
+        "fixed_size": "每次买入股数（整数，默认100股）",
+    },
+    "LessonDoubleMaStrategy": {
+        "fast_window": "快均线周期（整数，默认10）",
+        "slow_window": "慢均线周期（整数，默认20）",
+        "fixed_size": "每次下单数量（整数，默认1）",
+    },
+}
+
+
+def normalize_a_share_vt_symbol(vt_symbol: str) -> str:
+    """把常见的股票后缀别名统一转换成 vn.py 使用的交易所后缀。"""
+    normalized = vt_symbol.strip().upper()
+    if "." not in normalized:
+        return normalized
+
+    symbol, suffix = normalized.rsplit(".", 1)
+    suffix_map = {
+        "SH": "SSE",
+        "SZ": "SZSE",
+        "BJ": "BSE",
+    }
+    normalized_suffix = suffix_map.get(suffix, suffix)
+    return f"{symbol}.{normalized_suffix}"
 
 
 def patch_qt_stylesheet(qapp) -> None:
@@ -94,6 +123,19 @@ def should_reset_backtester_settings(current: dict) -> bool:
 
     vt_symbol = str(current.get("vt_symbol", "")).strip()
     if vt_symbol in {"", "IF88.CFFEX"}:
+        return True
+
+    # 如果本地还停留在旧的学习标的模板，就自动切到新的默认股票。
+    if (
+        vt_symbol in LEGACY_A_SHARE_TEST_SYMBOLS
+        and str(current.get("class_name", "")) == str(A_SHARE_BACKTEST_DEFAULTS["class_name"])
+        and str(current.get("interval", "")) == str(A_SHARE_BACKTEST_DEFAULTS["interval"])
+        and is_same_number(current.get("rate"), float(A_SHARE_BACKTEST_DEFAULTS["rate"]))
+        and is_same_number(current.get("slippage"), float(A_SHARE_BACKTEST_DEFAULTS["slippage"]))
+        and is_same_number(current.get("size"), float(A_SHARE_BACKTEST_DEFAULTS["size"]))
+        and is_same_number(current.get("pricetick"), float(A_SHARE_BACKTEST_DEFAULTS["pricetick"]))
+        and is_same_number(current.get("capital"), float(A_SHARE_BACKTEST_DEFAULTS["capital"]))
+    ):
         return True
 
     if is_a_share_symbol(vt_symbol):
@@ -505,6 +547,105 @@ def patch_backtester_engine() -> None:
     BacktesterEngine._vnpy_test_patched = True
 
 
+def patch_backtester_manager() -> None:
+    """让 CTA 回测界面兼容 SH/SZ/BJ 等常见股票后缀输入。"""
+    from vnpy_ctabacktester.ui.widget import BacktesterManager
+
+    if getattr(BacktesterManager, "_vnpy_test_symbol_patched", False):
+        return
+
+    original_load_backtesting_setting = BacktesterManager.load_backtesting_setting
+    original_start_backtesting = BacktesterManager.start_backtesting
+    original_start_optimization = BacktesterManager.start_optimization
+    original_start_downloading = BacktesterManager.start_downloading
+
+    def sync_symbol_input(self) -> str:
+        """把输入框里的股票代码统一成 vn.py 内部格式。"""
+        current_symbol = self.symbol_line.text()
+        normalized_symbol = normalize_a_share_vt_symbol(current_symbol)
+        if normalized_symbol != current_symbol:
+            self.symbol_line.setText(normalized_symbol)
+        return normalized_symbol
+
+    def patched_load_backtesting_setting(self) -> None:
+        """加载本地回测配置后，顺手规范一次股票后缀。"""
+        original_load_backtesting_setting(self)
+        sync_symbol_input(self)
+
+    def patched_start_backtesting(self) -> None:
+        """开始回测前，先规范股票后缀输入。"""
+        sync_symbol_input(self)
+        original_start_backtesting(self)
+
+    def patched_start_optimization(self) -> None:
+        """开始优化前，先规范股票后缀输入。"""
+        sync_symbol_input(self)
+        original_start_optimization(self)
+
+    def patched_start_downloading(self) -> None:
+        """下载数据前，先规范股票后缀输入。"""
+        sync_symbol_input(self)
+        original_start_downloading(self)
+
+    BacktesterManager.sync_symbol_input = sync_symbol_input
+    BacktesterManager.load_backtesting_setting = patched_load_backtesting_setting
+    BacktesterManager.start_backtesting = patched_start_backtesting
+    BacktesterManager.start_optimization = patched_start_optimization
+    BacktesterManager.start_downloading = patched_start_downloading
+    BacktesterManager._vnpy_test_symbol_patched = True
+
+
+def patch_backtesting_setting_editor() -> None:
+    """把策略参数弹窗改成更适合学习的中文显示。"""
+    from vnpy.trader.ui import QtGui, QtWidgets
+    from vnpy_ctabacktester.ui.widget import BacktestingSettingEditor
+    from vnpy_ctabacktester.locale import _
+
+    if getattr(BacktestingSettingEditor, "_vnpy_test_label_patched", False):
+        return
+
+    def init_ui(self) -> None:
+        """使用中文友好的参数标签重建回测参数弹窗。"""
+        form: QtWidgets.QFormLayout = QtWidgets.QFormLayout()
+
+        self.setWindowTitle(_("策略参数配置：{}").format(self.class_name))
+        button_text: str = _("确定")
+        parameter_labels = STRATEGY_PARAMETER_LABELS.get(self.class_name, {})
+
+        for name, value in self.parameters.items():
+            type_ = type(value)
+
+            edit: QtWidgets.QLineEdit = QtWidgets.QLineEdit(str(value))
+            if type_ is int:
+                int_validator: QtGui.QIntValidator = QtGui.QIntValidator()
+                edit.setValidator(int_validator)
+            elif type_ is float:
+                double_validator: QtGui.QDoubleValidator = QtGui.QDoubleValidator()
+                edit.setValidator(double_validator)
+
+            label_text = parameter_labels.get(name, name)
+            form.addRow(label_text, edit)
+            self.edits[name] = (edit, type_)
+
+        button: QtWidgets.QPushButton = QtWidgets.QPushButton(button_text)
+        button.clicked.connect(self.accept)
+        form.addRow(button)
+
+        widget: QtWidgets.QWidget = QtWidgets.QWidget()
+        widget.setLayout(form)
+
+        scroll: QtWidgets.QScrollArea = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(widget)
+
+        vbox: QtWidgets.QVBoxLayout = QtWidgets.QVBoxLayout()
+        vbox.addWidget(scroll)
+        self.setLayout(vbox)
+
+    BacktestingSettingEditor.init_ui = init_ui
+    BacktestingSettingEditor._vnpy_test_label_patched = True
+
+
 def sync_local_strategies() -> None:
     """Copy repo strategies into vnpy discovery folders."""
     project_strategy_dir = Path(__file__).resolve().parent / "strategies"
@@ -562,6 +703,8 @@ def main() -> int:
     from vnpy_datamanager import DataManagerApp
 
     patch_backtester_engine()
+    patch_backtester_manager()
+    patch_backtesting_setting_editor()
 
     qapp = create_qapp("vnpy_test")
     patch_qt_stylesheet(qapp)

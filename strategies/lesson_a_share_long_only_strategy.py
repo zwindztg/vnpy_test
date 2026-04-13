@@ -35,7 +35,9 @@ class LessonAShareLongOnlyStrategy(CtaTemplate):
         # BarGenerator 用来把 Tick 数据整理成 K 线，再交给 on_bar 处理。
         self.bg: BarGenerator = BarGenerator(self.on_bar)
         # ArrayManager 用来缓存最近一段时间的 K 线，便于计算均线等指标。
-        self.am: ArrayManager = ArrayManager()
+        # 这里把缓存窗口设成“慢均线周期 + 2”，这样既能算出前一根和当前一根均线，
+        # 也避免默认 100 根窗口太大，导致短区间回测一直处于“未初始化完成”状态。
+        self.am: ArrayManager = ArrayManager(self.slow_window + 2)
 
         # 预加载足够多的历史 K 线，保证慢均线也能顺利算出来。
         self.load_bar(self.slow_window + 10)

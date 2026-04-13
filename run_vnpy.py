@@ -40,6 +40,13 @@ STRATEGY_PARAMETER_LABELS: dict[str, dict[str, str]] = {
         "exit_window": "离场观察周期（整数，默认10）",
         "fixed_size": "每次买入股数（整数，默认100股）",
     },
+    "LessonVolumeBreakoutAShareStrategy": {
+        "breakout_window": "短线突破观察周期（整数，默认5）",
+        "exit_window": "短线离场观察周期（整数，默认3）",
+        "volume_window": "成交量均值周期（整数，默认5）",
+        "volume_ratio": "放量倍数阈值（浮点数，默认1.5）",
+        "fixed_size": "每次买入股数（整数，默认100股）",
+    },
     "LessonDoubleMaStrategy": {
         "fast_window": "快均线周期（整数，默认10）",
         "slow_window": "慢均线周期（整数，默认20）",
@@ -54,6 +61,7 @@ STRATEGY_DISPLAY_NAMES: dict[str, str] = {
     "KingKeltnerStrategy": "肯特纳通道策略（KingKeltnerStrategy）",
     "LessonAShareLongOnlyStrategy": "A股长仓学习策略（LessonAShareLongOnlyStrategy）",
     "LessonDonchianAShareStrategy": "A股唐奇安突破策略（LessonDonchianAShareStrategy）",
+    "LessonVolumeBreakoutAShareStrategy": "A股短线放量突破策略（LessonVolumeBreakoutAShareStrategy）",
     "LessonDoubleMaStrategy": "双均线教学策略（LessonDoubleMaStrategy）",
     "MultiSignalStrategy": "多信号策略（MultiSignalStrategy）",
     "MultiTimeframeStrategy": "多周期策略（MultiTimeframeStrategy）",
@@ -976,6 +984,37 @@ def patch_backtesting_setting_editor() -> None:
     BacktestingSettingEditor._vnpy_test_label_patched = True
 
 
+def patch_main_window_behavior() -> None:
+    """改善 macOS 下功能窗口打开后不前置的问题。"""
+    from vnpy.trader.ui.mainwindow import MainWindow
+    from vnpy.trader.ui import QtWidgets
+
+    if getattr(MainWindow, "_vnpy_test_open_widget_patched", False):
+        return
+
+    def open_widget(self, widget_class: type[QtWidgets.QWidget], name: str) -> None:
+        """打开功能窗口，并尽量把窗口带到前台。"""
+        widget: QtWidgets.QWidget | None = self.widgets.get(name, None)
+        if not widget:
+            widget = widget_class(self.main_engine, self.event_engine)      # type: ignore
+            self.widgets[name] = widget
+
+        if isinstance(widget, QtWidgets.QDialog):
+            widget.raise_()
+            widget.activateWindow()
+            widget.exec()
+        else:
+            # 在 macOS 下，单纯 show() 有时会创建窗口但不前置，
+            # 表现出来就像“菜单点了没反应”。这里显式恢复、前置并激活。
+            widget.showNormal()
+            widget.raise_()
+            widget.activateWindow()
+            widget.show()
+
+    MainWindow.open_widget = open_widget
+    MainWindow._vnpy_test_open_widget_patched = True
+
+
 def sync_local_strategies() -> None:
     """Copy repo strategies into vnpy discovery folders."""
     project_strategy_dir = Path(__file__).resolve().parent / "strategies"
@@ -1035,6 +1074,7 @@ def main() -> int:
     patch_backtester_engine()
     patch_backtester_manager()
     patch_backtesting_setting_editor()
+    patch_main_window_behavior()
 
     qapp = create_qapp("vnpy_test")
     patch_qt_stylesheet(qapp)

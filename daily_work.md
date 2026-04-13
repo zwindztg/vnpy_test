@@ -1,5 +1,19 @@
 # Daily Work Log
 
+## 2026-04-14 00:05:45 +08:00
+
+- 提交号：`29b913c`
+- 提交信息：`feat: 新增A股短线放量突破学习策略 / add a-share volume breakout study strategy`
+- 详细说明：
+  - 新增 [lesson_volume_breakout_a_share_strategy.py](/Users/zezhang/Documents/codex/vnpy/strategies/lesson_volume_breakout_a_share_strategy.py)，提供 A 股只做多的短线放量突破学习策略：
+    - 用短周期区间突破作为进场基础。
+    - 用成交量相对近期均量的倍数作为放量过滤条件。
+    - 用更短周期低点作为失败离场条件，帮助学习短线“该强不强就走”的思路。
+  - 更新 [run_vnpy.py](/Users/zezhang/Documents/codex/vnpy/run_vnpy.py)，把新策略接入 CTA 回测学习界面：
+    - 增加新策略的双语显示名称。
+    - 增加新策略参数的中文标签说明，方便直接在界面里调参测试。
+    - 保留并启用 macOS 下功能窗口自动前置逻辑，避免 `CTA回测` 窗口打开后不前置的问题。
+
 ## 2026-04-13 17:57:24 +08:00
 
 - 提交号：`eced07a`

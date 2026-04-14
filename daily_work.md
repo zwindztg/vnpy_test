@@ -120,3 +120,18 @@
   - 为 [vnpy_alertcenter/ui/widget.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/ui/widget.py) 增加按股票选择提醒策略的下拉框、动态参数区，以及“模拟时间 + 单次测试”入口，方便在非交易时段验证 GUI。
   - 重构 [vnpy_alertcenter/core.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/core.py) 的提醒内核，支持策略注册表、启用项过滤、代理自动绕过，以及远程分钟线失败后回退到本地数据库历史数据的单次测试流程。
   - 更新 [run_vnpy.py](/Users/zezhang/Documents/codex/vnpy/run_vnpy.py)、[scripts/akshare_realtime_alert.py](/Users/zezhang/Documents/codex/vnpy/scripts/akshare_realtime_alert.py)、[config/akshare_realtime_alert.json](/Users/zezhang/Documents/codex/vnpy/config/akshare_realtime_alert.json) 和 [README.md](/Users/zezhang/Documents/codex/vnpy/README.md)，统一提醒中心的默认配置、代理处理和使用说明。
+
+## 2026-04-15 00:36:46 +08:00
+
+- 提交号：`9ede9b3`
+- 提交信息：`feat: 接入 pytdx 免费分钟线并优化提醒文案 / add pytdx free minute data and polish alert wording`
+- 详细说明：
+  - 在 [vnpy_alertcenter/core.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/core.py) 中接入 `pytdx` 作为提醒中心的第一优先级免费分钟线来源，并保留“`pytdx` -> 东财分钟线 -> 本地数据库”的三级回退链路。
+  - 为 `pytdx` 增加主站候选列表、市场/周期映射、分页抓取、去重排序，以及按分钟周期过滤完整 K 线的处理，减少首次接入时对外部接口的依赖。
+  - 调整 [vnpy_alertcenter/ui/widget.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/ui/widget.py) 和 [scripts/akshare_realtime_alert.py](/Users/zezhang/Documents/codex/vnpy/scripts/akshare_realtime_alert.py) 的界面与脚本文案，让提醒中心不再误写成 `AKShare` 专用模块。
+  - 更新 [requirements.txt](/Users/zezhang/Documents/codex/vnpy/requirements.txt) 与 [README.md](/Users/zezhang/Documents/codex/vnpy/README.md)，补充 `pytdx` 依赖和新的数据源优先级说明。
+- TODO：
+  - 修复 `pytdx` 路径下时间类型比较后的完整预览回归，确认单次测试能直接走分钟线而不是先落到本地 `d` 数据。
+  - 把当前已验证可连通的 `pytdx` 主站缓存策略再收紧，避免首次探测时遍历过多节点导致等待偏长。
+  - 在 GUI 状态区补充“当前数据源”提示，明确区分 `pytdx`、东财分钟线和本地 fallback。
+  - 后续考虑把 `pytdx` 分钟线写回本地 `sqlite`，让非交易时段的分钟级回放更稳定。

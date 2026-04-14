@@ -1,5 +1,16 @@
 # Daily Work Log
 
+## 2026-04-14 20:14:27 +08:00
+
+- 提交号：`4d8c2c6`
+- 提交信息：`feat: 新增 vn.py 实时提醒中心 / add vn.py alert center`
+- 详细说明：
+  - 新增 [vnpy_alertcenter](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter) 本地扩展包，按 `BaseApp + Engine + Widget` 结构把 `AKShare` 准实时提醒整合进 `vn.py` 的“功能”菜单。
+  - 新增 [akshare_realtime_alert.json](/Users/zezhang/Documents/codex/vnpy/config/akshare_realtime_alert.json)，支持在配置文件中维护轮询参数、桌面通知开关和最多 3 只股票的提醒规则。
+  - 保留并更新 [akshare_realtime_alert.py](/Users/zezhang/Documents/codex/vnpy/scripts/akshare_realtime_alert.py) 独立脚本入口，同时把共用提醒内核抽到 GUI 模块侧复用。
+  - 更新 [run_vnpy.py](/Users/zezhang/Documents/codex/vnpy/run_vnpy.py) 以同步 `vnpy_alertcenter` 包并注册 `AlertCenterApp`，让“实时提醒”窗口能直接在主界面打开。
+  - 更新 [README.md](/Users/zezhang/Documents/codex/vnpy/README.md) 和 [.gitignore](/Users/zezhang/Documents/codex/vnpy/.gitignore)，补充使用说明并忽略提醒运行生成的 `logs/` 目录。
+
 ## 2026-04-14 18:22:33 +08:00
 
 - 提交号：`722e920`

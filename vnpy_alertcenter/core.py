@@ -21,6 +21,18 @@ import requests
 from zoneinfo import ZoneInfo
 
 try:
+    from pytdx.config.hosts import hq_hosts as PYTDX_HQ_HOSTS
+    from pytdx.hq import TdxHq_API
+    from pytdx.params import TDXParams
+
+    PYTDX_AVAILABLE = True
+except Exception:
+    PYTDX_HQ_HOSTS = []
+    TdxHq_API = None
+    TDXParams = None
+    PYTDX_AVAILABLE = False
+
+try:
     from vnpy.trader.utility import TRADER_DIR
 
     BASE_DIR = Path(TRADER_DIR)
@@ -36,6 +48,9 @@ DEFAULT_INTERVAL = "5m"
 DEFAULT_POLL_SECONDS = 20
 DEFAULT_ADJUST = "qfq"
 DEFAULT_COOLDOWN_SECONDS = 300
+PYTDX_HOST_TIMEOUT = 2
+PYTDX_BATCH_SIZE = 800
+PYTDX_DEFAULT_HOST = ("上证云成都电信一", "218.6.170.47", 7709)
 SUPPORTED_INTERVALS: dict[str, int] = {
     "1m": 1,
     "5m": 5,
@@ -62,6 +77,7 @@ PROJECT_PROXY_ENV_KEYS: tuple[str, ...] = (
     "all_proxy",
     "no_proxy",
 )
+PYTDX_WORKING_HOST: tuple[str, str, int] | None = None
 
 BASIC_ALERT_STRATEGY = "BasicAlertStrategy"
 LESSON_A_SHARE_LONG_ONLY = "LessonAShareLongOnlyStrategy"
@@ -1015,7 +1031,7 @@ def split_vt_symbol(vt_symbol: str) -> tuple[str, str]:
 
     symbol, exchange = parts
     if not symbol.isdigit():
-        raise ValueError(f"AKShare 当前仅支持纯数字股票代码：{vt_symbol}")
+        raise ValueError(f"当前提醒中心仅支持纯数字股票代码：{vt_symbol}")
     return symbol, exchange
 
 
@@ -1098,7 +1114,7 @@ def is_a_share_trading_time(dt: datetime) -> bool:
 
 
 def find_first_existing_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
-    """从候选字段名里找出 AKShare 当前版本实际返回的列名。"""
+    """从候选字段名里找出当前数据源实际返回的列名。"""
     for candidate in candidates:
         if candidate in df.columns:
             return candidate
@@ -1111,6 +1127,123 @@ def stringify_path(path: Path) -> str:
         return str(path.relative_to(BASE_DIR))
     except ValueError:
         return str(path)
+
+
+def get_pytdx_market(exchange: str) -> int:
+    """把交易所映射成 pytdx 需要的市场编码。"""
+    if not PYTDX_AVAILABLE or TDXParams is None:
+        raise ValueError("pytdx 当前不可用。")
+    if exchange == "SSE":
+        return int(TDXParams.MARKET_SH)
+    if exchange == "SZSE":
+        return int(TDXParams.MARKET_SZ)
+    raise ValueError(f"{exchange} 暂不支持 pytdx 行情。")
+
+
+def get_pytdx_kline_type(interval: str) -> int:
+    """把分钟周期映射成 pytdx 的 K 线类别。"""
+    if not PYTDX_AVAILABLE or TDXParams is None:
+        raise ValueError("pytdx 当前不可用。")
+
+    normalized = normalize_interval(interval)
+    category_map = {
+        "1m": int(TDXParams.KLINE_TYPE_1MIN),
+        "5m": int(TDXParams.KLINE_TYPE_5MIN),
+        "15m": int(TDXParams.KLINE_TYPE_15MIN),
+        "30m": int(TDXParams.KLINE_TYPE_30MIN),
+    }
+    try:
+        return category_map[normalized]
+    except KeyError as exc:
+        raise ValueError(f"{interval} 暂不支持 pytdx 分钟线。") from exc
+
+
+def estimate_pytdx_bar_count(interval: str, start_dt: datetime, end_dt: datetime) -> int:
+    """按交易日长度粗略估算应抓取的 K 线数量，减少不必要分页。"""
+    interval_minutes = get_interval_minutes(interval)
+    trading_days = max(1, (end_dt.date() - start_dt.date()).days + 1)
+    bars_per_day = (240 + interval_minutes - 1) // interval_minutes
+    estimated = trading_days * bars_per_day + 80
+    return max(240, min(estimated, PYTDX_BATCH_SIZE * 4))
+
+
+def iter_pytdx_host_candidates() -> list[tuple[str, str, int]]:
+    """按“已验证节点 -> 默认节点 -> 内置列表”的顺序组织 pytdx 主站。"""
+    ordered_hosts: list[tuple[str, str, int]] = []
+    seen: set[tuple[str, int]] = set()
+
+    for candidate in (PYTDX_WORKING_HOST, PYTDX_DEFAULT_HOST, *PYTDX_HQ_HOSTS):
+        if candidate is None:
+            continue
+        name, host, port = candidate
+        if (host, port) in seen:
+            continue
+        seen.add((host, port))
+        ordered_hosts.append((str(name), str(host), int(port)))
+    return ordered_hosts
+
+
+def fetch_pytdx_minute_dataframe(
+    symbol: str,
+    exchange: str,
+    interval: str,
+    start_dt: datetime,
+    end_dt: datetime,
+) -> pd.DataFrame:
+    """优先通过 pytdx 获取免费分钟线，减少对东财接口的依赖。"""
+    if not PYTDX_AVAILABLE or TdxHq_API is None:
+        raise ValueError("pytdx 未安装，无法使用通达信分钟线。")
+
+    market = get_pytdx_market(exchange)
+    category = get_pytdx_kline_type(interval)
+    requested_count = estimate_pytdx_bar_count(interval, start_dt, end_dt)
+    last_error: Exception | None = None
+    global PYTDX_WORKING_HOST
+
+    for name, host, port in iter_pytdx_host_candidates():
+        api = TdxHq_API(heartbeat=False, auto_retry=False, raise_exception=True)
+        try:
+            connected = api.connect(host, port, time_out=PYTDX_HOST_TIMEOUT)
+            if not connected:
+                continue
+
+            raw_rows: list[dict] = []
+            start = 0
+            while start < requested_count:
+                batch_count = min(PYTDX_BATCH_SIZE, requested_count - start)
+                batch = api.get_security_bars(category, market, symbol, start, batch_count)
+                if not batch:
+                    break
+                raw_rows.extend(batch)
+                if len(batch) < batch_count:
+                    break
+                start += len(batch)
+
+            if not raw_rows:
+                raise ValueError(f"pytdx 主站 {name} 没有返回 {symbol} 的分钟线数据。")
+
+            df = api.to_df(raw_rows)
+            if df is None or df.empty or "datetime" not in df.columns:
+                raise ValueError(f"pytdx 主站 {name} 返回了无法解析的分钟线数据。")
+
+            PYTDX_WORKING_HOST = (name, host, port)
+            df["datetime"] = pd.to_datetime(df["datetime"])
+            # pytdx 返回的是本地时区的 naive 时间，这里统一用上海时区的本地时间比较区间。
+            local_start = ensure_china_tz(start_dt).replace(tzinfo=None)
+            local_end = ensure_china_tz(end_dt).replace(tzinfo=None)
+            df = df.sort_values("datetime").drop_duplicates(subset=["datetime"], keep="last")
+            return df[(df["datetime"] >= local_start) & (df["datetime"] <= local_end)].copy()
+        except Exception as exc:
+            last_error = exc
+        finally:
+            try:
+                api.disconnect()
+            except Exception:
+                pass
+
+    if last_error is not None:
+        raise last_error
+    raise ValueError("未找到可用的 pytdx 行情主站。")
 
 
 def fetch_eastmoney_minute_dataframe(
@@ -1217,7 +1350,7 @@ def fetch_eastmoney_minute_dataframe(
 
 
 def disable_process_proxy_env() -> list[str]:
-    """仅在当前 Python 进程内清理代理变量，避免 AKShare 误走本地代理。"""
+    """仅在当前 Python 进程内清理代理变量，避免行情请求误走本地代理。"""
     cleared_keys: list[str] = []
     for key in PROJECT_PROXY_ENV_KEYS:
         if os.environ.pop(key, None) is not None:
@@ -1318,6 +1451,20 @@ def escape_applescript(text: str) -> str:
     return text.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def filter_completed_bars(
+    bars: list[AlertBar],
+    now: datetime,
+    interval_minutes: int,
+    *,
+    timestamp_mode: str,
+) -> list[AlertBar]:
+    """按不同数据源的时间戳语义过滤出已完成 K 线。"""
+    cutoff = floor_to_interval(now, interval_minutes)
+    if timestamp_mode == "close":
+        return [bar for bar in bars if bar.dt <= cutoff]
+    return [bar for bar in bars if bar.dt < cutoff]
+
+
 class SymbolAlertService:
     """管理单只股票的提醒轮询、去重和策略分发。"""
 
@@ -1412,14 +1559,35 @@ class SymbolAlertService:
 
     def fetch_completed_bars(self, now: datetime, allow_local_fallback: bool = False) -> list[AlertBar]:
         """拉取最近一批分钟数据，并取已完成 K 线。"""
-        symbol, _exchange = split_vt_symbol(self.config.vt_symbol)
+        symbol, exchange = split_vt_symbol(self.config.vt_symbol)
         interval_minutes = get_interval_minutes(self.app_config.interval)
         period = str(interval_minutes)
         start_dt = now - timedelta(days=5)
         end_dt = now + timedelta(minutes=1)
 
+        last_remote_error: Exception | None = None
+
         try:
-            # 这里直接请求东财接口，并显式关闭代理读取，避免 AKShare 默认请求被本地代理或请求头拦截。
+            # 分钟线优先走 pytdx，免费且在当前机器上比东财接口更稳定。
+            df = fetch_pytdx_minute_dataframe(
+                symbol=symbol,
+                exchange=exchange,
+                interval=self.app_config.interval,
+                start_dt=start_dt,
+                end_dt=end_dt,
+            )
+            parsed = self.parse_bars(df)
+            return filter_completed_bars(
+                parsed,
+                now,
+                interval_minutes,
+                timestamp_mode="close",
+            )
+        except Exception as exc:
+            last_remote_error = exc
+
+        try:
+            # 东财作为第二优先级兜底，适合 pytdx 暂时失联时继续尝试。
             with temporary_proxy_bypass():
                 df = fetch_eastmoney_minute_dataframe(
                     symbol=symbol,
@@ -1429,6 +1597,8 @@ class SymbolAlertService:
                     end_dt=end_dt,
                 )
         except Exception as exc:
+            if last_remote_error is not None:
+                exc = ValueError(f"pytdx 失败：{last_remote_error}；东财失败：{exc}")
             if not allow_local_fallback:
                 raise
 
@@ -1450,8 +1620,12 @@ class SymbolAlertService:
         if not parsed:
             return []
 
-        cutoff = floor_to_interval(now, interval_minutes)
-        return [bar for bar in parsed if bar.dt < cutoff]
+        return filter_completed_bars(
+            parsed,
+            now,
+            interval_minutes,
+            timestamp_mode="open",
+        )
 
     def fetch_local_database_bars(self, now: datetime) -> tuple[list[AlertBar], str]:
         """单次测试失败时，优先回退到项目本地数据库。"""
@@ -1526,7 +1700,7 @@ class SymbolAlertService:
             return list(cursor.fetchall())
 
     def parse_bars(self, df: pd.DataFrame) -> list[AlertBar]:
-        """兼容 AKShare 常见字段名，提取提醒需要的时间、价格和成交量。"""
+        """兼容 pytdx、东财等数据源字段名，提取提醒需要的时间、价格和成交量。"""
         time_column = find_first_existing_column(df, ["时间", "datetime", "day"])
         close_column = find_first_existing_column(df, ["收盘", "close"])
         high_column = find_first_existing_column(df, ["最高", "high"])
@@ -1647,7 +1821,7 @@ class AlertCenterRunner:
         self.log(
             "INFO",
             (
-                f"AKShare 实时提醒已启动，标的={symbol_text}，周期={self.config.interval}，"
+                f"实时提醒已启动，标的={symbol_text}，周期={self.config.interval}，"
                 f"轮询间隔={self.config.poll_seconds}秒，冷却时间={self.config.cooldown_seconds}秒。"
             ),
         )

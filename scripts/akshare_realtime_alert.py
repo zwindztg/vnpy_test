@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""使用共享提醒内核运行独立版 AKShare 实时提醒。"""
+"""使用共享提醒内核运行独立版实时提醒。"""
 
 from __future__ import annotations
 

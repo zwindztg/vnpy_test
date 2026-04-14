@@ -108,7 +108,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
 
     def init_ui(self) -> None:
         """初始化整个窗口布局。"""
-        self.setWindowTitle("AKShare 实时提醒")
+        self.setWindowTitle("实时提醒中心")
         self.resize(1600, 940)
 
         layout = QtWidgets.QVBoxLayout()

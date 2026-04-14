@@ -1,0 +1,486 @@
+"""实时提醒 BaseApp 的窗口界面。"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+from vnpy.event import Event
+from vnpy.trader.ui import QtCore, QtGui, QtWidgets
+
+from ..core import (
+    MAX_SYMBOL_COUNT,
+    AppConfig,
+    RecordData,
+    RunnerStatusData,
+    SymbolConfig,
+    SymbolStateData,
+    build_default_state,
+)
+from ..engine import (
+    APP_NAME,
+    EVENT_ALERTCENTER_LOG,
+    EVENT_ALERTCENTER_RECORD,
+    EVENT_ALERTCENTER_STATE,
+    EVENT_ALERTCENTER_STATUS,
+    AlertCenterEngine,
+)
+
+
+@dataclass
+class SymbolRowWidgets:
+    """保存一行股票配置输入控件。"""
+
+    enabled: QtWidgets.QCheckBox
+    vt_symbol: QtWidgets.QLineEdit
+    breakout_price: QtWidgets.QDoubleSpinBox
+    stop_loss_price: QtWidgets.QDoubleSpinBox
+    fast_ma_window: QtWidgets.QSpinBox
+    slow_ma_window: QtWidgets.QSpinBox
+
+
+class AlertCenterWidget(QtWidgets.QWidget):
+    """用于在 vn.py 内部操作实时提醒的主窗口。"""
+
+    signal_log: QtCore.Signal = QtCore.Signal(Event)
+    signal_status: QtCore.Signal = QtCore.Signal(Event)
+    signal_record: QtCore.Signal = QtCore.Signal(Event)
+    signal_state: QtCore.Signal = QtCore.Signal(Event)
+
+    STATE_HEADERS: tuple[str, ...] = (
+        "股票",
+        "启用",
+        "最新K线",
+        "最新收盘",
+        "突破状态",
+        "止损状态",
+        "均线状态",
+        "最近提醒",
+        "最近错误",
+        "运行状态",
+    )
+    RECORD_HEADERS: tuple[str, ...] = (
+        "时间",
+        "股票",
+        "周期",
+        "规则",
+        "级别",
+        "数值",
+        "K线时间",
+        "文案",
+    )
+
+    def __init__(self, main_engine, event_engine) -> None:
+        super().__init__()
+        self.main_engine = main_engine
+        self.event_engine = event_engine
+        self.alert_engine: AlertCenterEngine = main_engine.get_engine(APP_NAME)  # type: ignore
+        self.row_widgets: list[SymbolRowWidgets] = []
+        self.state_rows: dict[str, int] = {}
+        self.current_config: AppConfig = self.alert_engine.load_config()
+
+        self.init_ui()
+        self.register_event()
+        self.load_config_to_form(self.current_config)
+        self.load_recent_records()
+        self.populate_state_placeholders(self.current_config)
+        self.refresh_runtime_info()
+
+    def init_ui(self) -> None:
+        """初始化整个窗口布局。"""
+        self.setWindowTitle("AKShare 实时提醒")
+        self.resize(1480, 920)
+
+        layout = QtWidgets.QVBoxLayout()
+        layout.addLayout(self.create_control_bar())
+        layout.addWidget(self.create_global_group())
+        layout.addWidget(self.create_symbol_group())
+        layout.addWidget(self.create_runtime_group())
+        layout.addWidget(self.create_bottom_splitter(), stretch=1)
+        self.setLayout(layout)
+
+    def create_control_bar(self) -> QtWidgets.QHBoxLayout:
+        """创建顶部操作栏。"""
+        layout = QtWidgets.QHBoxLayout()
+
+        self.load_button = QtWidgets.QPushButton("加载配置")
+        self.save_button = QtWidgets.QPushButton("保存配置")
+        self.start_button = QtWidgets.QPushButton("启动提醒")
+        self.stop_button = QtWidgets.QPushButton("停止提醒")
+        self.status_label = QtWidgets.QLabel("未启动")
+        self.status_label.setMinimumWidth(220)
+
+        self.load_button.clicked.connect(self.load_config_from_engine)
+        self.save_button.clicked.connect(self.save_form_config)
+        self.start_button.clicked.connect(self.start_alerting)
+        self.stop_button.clicked.connect(self.stop_alerting)
+
+        layout.addWidget(self.load_button)
+        layout.addWidget(self.save_button)
+        layout.addWidget(self.start_button)
+        layout.addWidget(self.stop_button)
+        layout.addStretch(1)
+        layout.addWidget(QtWidgets.QLabel("整体状态："))
+        layout.addWidget(self.status_label)
+        return layout
+
+    def create_global_group(self) -> QtWidgets.QGroupBox:
+        """创建全局参数区域。"""
+        group = QtWidgets.QGroupBox("全局设置")
+        form = QtWidgets.QFormLayout()
+
+        self.interval_combo = QtWidgets.QComboBox()
+        self.interval_combo.addItem("5m", "5m")
+
+        self.poll_spin = QtWidgets.QSpinBox()
+        self.poll_spin.setRange(5, 3600)
+        self.poll_spin.setSuffix(" 秒")
+
+        self.cooldown_spin = QtWidgets.QSpinBox()
+        self.cooldown_spin.setRange(0, 7200)
+        self.cooldown_spin.setSuffix(" 秒")
+
+        self.adjust_combo = QtWidgets.QComboBox()
+        self.adjust_combo.addItem("前复权", "qfq")
+        self.adjust_combo.addItem("后复权", "hfq")
+        self.adjust_combo.addItem("不复权", "")
+
+        self.notification_checkbox = QtWidgets.QCheckBox("启用桌面通知")
+
+        form.addRow("提醒周期", self.interval_combo)
+        form.addRow("轮询间隔", self.poll_spin)
+        form.addRow("冷却时间", self.cooldown_spin)
+        form.addRow("复权方式", self.adjust_combo)
+        form.addRow("", self.notification_checkbox)
+
+        group.setLayout(form)
+        return group
+
+    def create_symbol_group(self) -> QtWidgets.QGroupBox:
+        """创建股票配置区域。"""
+        group = QtWidgets.QGroupBox("股票配置（最多 3 只）")
+        grid = QtWidgets.QGridLayout()
+
+        headers = ("启用", "股票代码", "突破价", "止损价", "快均线", "慢均线")
+        for column, title in enumerate(headers):
+            label = QtWidgets.QLabel(title)
+            label.setStyleSheet("font-weight: 600;")
+            grid.addWidget(label, 0, column)
+
+        for row in range(MAX_SYMBOL_COUNT):
+            row_widgets = SymbolRowWidgets(
+                enabled=QtWidgets.QCheckBox(),
+                vt_symbol=QtWidgets.QLineEdit(),
+                breakout_price=self.create_price_spinbox(),
+                stop_loss_price=self.create_price_spinbox(),
+                fast_ma_window=self.create_window_spinbox(),
+                slow_ma_window=self.create_window_spinbox(),
+            )
+            row_widgets.vt_symbol.setPlaceholderText("例如 601869.SSE")
+            self.row_widgets.append(row_widgets)
+
+            grid.addWidget(row_widgets.enabled, row + 1, 0)
+            grid.addWidget(row_widgets.vt_symbol, row + 1, 1)
+            grid.addWidget(row_widgets.breakout_price, row + 1, 2)
+            grid.addWidget(row_widgets.stop_loss_price, row + 1, 3)
+            grid.addWidget(row_widgets.fast_ma_window, row + 1, 4)
+            grid.addWidget(row_widgets.slow_ma_window, row + 1, 5)
+
+        group.setLayout(grid)
+        return group
+
+    def create_runtime_group(self) -> QtWidgets.QGroupBox:
+        """创建运行信息区。"""
+        group = QtWidgets.QGroupBox("运行信息")
+        form = QtWidgets.QFormLayout()
+
+        self.config_path_label = QtWidgets.QLabel("")
+        self.history_path_label = QtWidgets.QLabel("")
+        self.thread_label = QtWidgets.QLabel("")
+
+        form.addRow("配置文件", self.config_path_label)
+        form.addRow("记录文件", self.history_path_label)
+        form.addRow("线程状态", self.thread_label)
+        group.setLayout(form)
+        return group
+
+    def create_bottom_splitter(self) -> QtWidgets.QSplitter:
+        """创建状态、记录和日志三块视图。"""
+        state_record_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        state_record_splitter.addWidget(self.create_state_table())
+        state_record_splitter.addWidget(self.create_record_table())
+        state_record_splitter.setStretchFactor(0, 1)
+        state_record_splitter.setStretchFactor(1, 1)
+
+        self.log_edit = QtWidgets.QTextEdit()
+        self.log_edit.setReadOnly(True)
+
+        outer_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        outer_splitter.addWidget(state_record_splitter)
+        outer_splitter.addWidget(self.log_edit)
+        outer_splitter.setStretchFactor(0, 3)
+        outer_splitter.setStretchFactor(1, 2)
+        return outer_splitter
+
+    def create_state_table(self) -> QtWidgets.QTableWidget:
+        """创建状态面板表格。"""
+        self.state_table = QtWidgets.QTableWidget()
+        self.state_table.setColumnCount(len(self.STATE_HEADERS))
+        self.state_table.setHorizontalHeaderLabels(self.STATE_HEADERS)
+        self.state_table.verticalHeader().setVisible(False)
+        self.state_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.state_table.setAlternatingRowColors(True)
+        self.state_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        self.state_table.horizontalHeader().setStretchLastSection(True)
+        return self.state_table
+
+    def create_record_table(self) -> QtWidgets.QTableWidget:
+        """创建触发记录表格。"""
+        self.record_table = QtWidgets.QTableWidget()
+        self.record_table.setColumnCount(len(self.RECORD_HEADERS))
+        self.record_table.setHorizontalHeaderLabels(self.RECORD_HEADERS)
+        self.record_table.verticalHeader().setVisible(False)
+        self.record_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.record_table.setAlternatingRowColors(True)
+        self.record_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        self.record_table.horizontalHeader().setStretchLastSection(True)
+        return self.record_table
+
+    def create_price_spinbox(self) -> QtWidgets.QDoubleSpinBox:
+        """创建价格输入框。"""
+        spinbox = QtWidgets.QDoubleSpinBox()
+        spinbox.setDecimals(3)
+        spinbox.setRange(0.0, 100000.0)
+        spinbox.setSingleStep(0.01)
+        return spinbox
+
+    def create_window_spinbox(self) -> QtWidgets.QSpinBox:
+        """创建均线窗口输入框。"""
+        spinbox = QtWidgets.QSpinBox()
+        spinbox.setRange(1, 250)
+        return spinbox
+
+    def register_event(self) -> None:
+        """注册引擎事件。"""
+        self.signal_log.connect(self.process_log_event)
+        self.signal_status.connect(self.process_status_event)
+        self.signal_record.connect(self.process_record_event)
+        self.signal_state.connect(self.process_state_event)
+
+        self.event_engine.register(EVENT_ALERTCENTER_LOG, self.signal_log.emit)
+        self.event_engine.register(EVENT_ALERTCENTER_STATUS, self.signal_status.emit)
+        self.event_engine.register(EVENT_ALERTCENTER_RECORD, self.signal_record.emit)
+        self.event_engine.register(EVENT_ALERTCENTER_STATE, self.signal_state.emit)
+
+    def load_config_from_engine(self) -> None:
+        """重新从磁盘读取配置并刷新界面。"""
+        self.current_config = self.alert_engine.load_config()
+        self.load_config_to_form(self.current_config)
+        self.populate_state_placeholders(self.current_config)
+        self.load_recent_records()
+        self.refresh_runtime_info()
+        self.append_log("INFO", "UI", "已从配置文件重新加载提醒设置。")
+
+    def load_config_to_form(self, config: AppConfig) -> None:
+        """把配置对象回填到表单。"""
+        self.set_combo_data(self.interval_combo, config.interval)
+        self.poll_spin.setValue(config.poll_seconds)
+        self.cooldown_spin.setValue(config.cooldown_seconds)
+        self.set_combo_data(self.adjust_combo, config.adjust)
+        self.notification_checkbox.setChecked(config.notification_enabled)
+
+        for row_widgets in self.row_widgets:
+            row_widgets.enabled.setChecked(False)
+            row_widgets.vt_symbol.setText("")
+            row_widgets.breakout_price.setValue(0.0)
+            row_widgets.stop_loss_price.setValue(0.0)
+            row_widgets.fast_ma_window.setValue(3)
+            row_widgets.slow_ma_window.setValue(8)
+
+        for index, symbol in enumerate(config.symbol_configs[:MAX_SYMBOL_COUNT]):
+            row_widgets = self.row_widgets[index]
+            row_widgets.enabled.setChecked(symbol.enabled)
+            row_widgets.vt_symbol.setText(symbol.vt_symbol)
+            row_widgets.breakout_price.setValue(symbol.breakout_price)
+            row_widgets.stop_loss_price.setValue(symbol.stop_loss_price)
+            row_widgets.fast_ma_window.setValue(symbol.fast_ma_window)
+            row_widgets.slow_ma_window.setValue(symbol.slow_ma_window)
+
+    def collect_config_from_form(self) -> AppConfig:
+        """把当前表单值组装成配置对象。"""
+        symbol_configs: list[SymbolConfig] = []
+        for row_widgets in self.row_widgets:
+            vt_symbol = row_widgets.vt_symbol.text().strip().upper()
+            if not vt_symbol:
+                continue
+
+            symbol_configs.append(
+                SymbolConfig(
+                    vt_symbol=vt_symbol,
+                    breakout_price=row_widgets.breakout_price.value(),
+                    stop_loss_price=row_widgets.stop_loss_price.value(),
+                    fast_ma_window=row_widgets.fast_ma_window.value(),
+                    slow_ma_window=row_widgets.slow_ma_window.value(),
+                    enabled=row_widgets.enabled.isChecked(),
+                )
+            )
+
+        if not symbol_configs:
+            raise ValueError("请至少填写一只股票代码。")
+
+        return AppConfig(
+            interval=str(self.interval_combo.currentData()),
+            poll_seconds=int(self.poll_spin.value()),
+            adjust=str(self.adjust_combo.currentData()),
+            cooldown_seconds=int(self.cooldown_spin.value()),
+            alert_history_path=self.current_config.alert_history_path,
+            notification_enabled=self.notification_checkbox.isChecked(),
+            symbol_configs=tuple(symbol_configs),
+        )
+
+    def save_form_config(self) -> None:
+        """保存当前表单配置。"""
+        try:
+            config = self.collect_config_from_form()
+        except ValueError as exc:
+            self.show_warning(str(exc))
+            return
+
+        self.alert_engine.save_config(config)
+        self.current_config = config
+        self.populate_state_placeholders(config)
+        self.refresh_runtime_info()
+
+    def start_alerting(self) -> None:
+        """用当前表单配置启动提醒线程。"""
+        try:
+            config = self.collect_config_from_form()
+        except ValueError as exc:
+            self.show_warning(str(exc))
+            return
+
+        self.current_config = config
+        self.populate_state_placeholders(config)
+        self.alert_engine.start_alerting(config)
+        self.refresh_runtime_info()
+
+    def stop_alerting(self) -> None:
+        """停止提醒线程。"""
+        self.alert_engine.stop_alerting()
+        self.refresh_runtime_info()
+
+    def load_recent_records(self) -> None:
+        """读取最近记录，刷新表格。"""
+        self.record_table.setRowCount(0)
+        for record in self.alert_engine.get_recent_records(limit=80):
+            self.insert_record_row(record, to_top=False)
+
+    def populate_state_placeholders(self, config: AppConfig) -> None:
+        """按当前配置重建状态表格的股票行。"""
+        self.state_table.setRowCount(0)
+        self.state_rows.clear()
+
+        for row, symbol in enumerate(config.symbol_configs[:MAX_SYMBOL_COUNT]):
+            self.state_table.insertRow(row)
+            self.state_rows[symbol.vt_symbol] = row
+            self.update_state_row(build_default_state(symbol))
+
+    def process_log_event(self, event: Event) -> None:
+        """处理日志事件。"""
+        data = event.data
+        self.append_log(data.level, data.source, data.message, data.timestamp)
+
+    def process_status_event(self, event: Event) -> None:
+        """处理整体状态事件。"""
+        data: RunnerStatusData = event.data
+        self.status_label.setText(data.message)
+        if data.running and data.paused:
+            self.status_label.setStyleSheet("color: #d97706; font-weight: 600;")
+        elif data.running:
+            self.status_label.setStyleSheet("color: #15803d; font-weight: 600;")
+        else:
+            self.status_label.setStyleSheet("color: #475569; font-weight: 600;")
+
+        self.start_button.setEnabled(not data.running)
+        self.stop_button.setEnabled(data.running)
+        self.refresh_runtime_info()
+
+    def process_record_event(self, event: Event) -> None:
+        """处理触发记录事件。"""
+        self.insert_record_row(event.data, to_top=True)
+
+    def process_state_event(self, event: Event) -> None:
+        """处理单只股票状态事件。"""
+        self.update_state_row(event.data)
+
+    def update_state_row(self, data: SymbolStateData) -> None:
+        """更新或新增一条状态行。"""
+        row = self.state_rows.get(data.vt_symbol)
+        if row is None:
+            row = self.state_table.rowCount()
+            self.state_table.insertRow(row)
+            self.state_rows[data.vt_symbol] = row
+
+        values = [
+            data.vt_symbol,
+            "是" if data.enabled else "否",
+            data.latest_bar_dt,
+            data.latest_close,
+            data.breakout_state,
+            data.stop_loss_state,
+            data.cross_state,
+            data.last_alert_at,
+            data.last_error,
+            data.status,
+        ]
+
+        for column, value in enumerate(values):
+            item = self.state_table.item(row, column)
+            if item is None:
+                item = QtWidgets.QTableWidgetItem()
+                self.state_table.setItem(row, column, item)
+            item.setText(str(value))
+
+    def insert_record_row(self, data: RecordData, to_top: bool) -> None:
+        """向记录表中插入一条记录。"""
+        row = 0 if to_top else self.record_table.rowCount()
+        self.record_table.insertRow(row)
+
+        values = [
+            data.occurred_at,
+            data.vt_symbol,
+            data.interval,
+            data.rule_name,
+            data.level,
+            data.rule_value,
+            data.triggered_bar_dt,
+            data.message,
+        ]
+        for column, value in enumerate(values):
+            item = QtWidgets.QTableWidgetItem(str(value))
+            self.record_table.setItem(row, column, item)
+
+    def append_log(self, level: str, source: str, message: str, timestamp: str | None = None) -> None:
+        """向日志框追加一条格式化日志。"""
+        log_time = timestamp or QtCore.QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
+        self.log_edit.append(f"[{log_time}] [{level}] [{source}] {message}")
+
+    def refresh_runtime_info(self) -> None:
+        """刷新配置文件、记录文件和线程状态显示。"""
+        runtime = self.alert_engine.get_runtime_status()
+        self.config_path_label.setText(str(Path(runtime["config_path"])))
+        self.history_path_label.setText(str(Path(runtime["history_path"])))
+        running = bool(runtime["running"])
+        self.thread_label.setText("运行中" if running else "未运行")
+        self.start_button.setEnabled(not running)
+        self.stop_button.setEnabled(running)
+
+    def set_combo_data(self, combo: QtWidgets.QComboBox, value: str) -> None:
+        """按 userData 选择下拉项。"""
+        index = combo.findData(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+    def show_warning(self, message: str) -> None:
+        """统一显示输入或配置错误。"""
+        QtWidgets.QMessageBox.warning(self, "提醒配置", message)

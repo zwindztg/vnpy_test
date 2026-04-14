@@ -1,0 +1,26 @@
+{
+  "interval": "5m",
+  "poll_seconds": 20,
+  "adjust": "qfq",
+  "cooldown_seconds": 300,
+  "notification_enabled": true,
+  "alert_history_path": "logs/akshare_realtime_alerts.csv",
+  "symbols": [
+    {
+      "vt_symbol": "601869.SSE",
+      "breakout_price": 6.8,
+      "stop_loss_price": 6.55,
+      "fast_ma_window": 3,
+      "slow_ma_window": 8,
+      "enabled": true
+    },
+    {
+      "vt_symbol": "600000.SSE",
+      "breakout_price": 12.6,
+      "stop_loss_price": 12.1,
+      "fast_ma_window": 3,
+      "slow_ma_window": 8,
+      "enabled": true
+    }
+  ]
+}

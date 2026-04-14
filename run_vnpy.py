@@ -1032,7 +1032,7 @@ def sync_local_strategies() -> None:
 def sync_local_packages() -> None:
     """Copy repo-local vnpy extension packages into vnpy import paths."""
     project_dir = Path(__file__).resolve().parent
-    package_names = ["vnpy_localdemo", "vnpy_akshare"]
+    package_names = ["vnpy_localdemo", "vnpy_akshare", "vnpy_alertcenter"]
     # 只同步到工程内 .vntrader，避免污染用户根目录。
     target_dirs = [get_trader_dir()]
 
@@ -1060,6 +1060,7 @@ def main() -> int:
 
     from vnpy.trader.engine import MainEngine
     from vnpy.trader.ui import MainWindow, create_qapp
+    from vnpy_alertcenter import AlertCenterApp
     from vnpy_ctabacktester import CtaBacktesterApp
     from vnpy_ctastrategy import CtaStrategyApp
     from vnpy_datamanager import DataManagerApp
@@ -1077,6 +1078,7 @@ def main() -> int:
     main_engine.add_app(CtaStrategyApp)
     main_engine.add_app(CtaBacktesterApp)
     main_engine.add_app(DataManagerApp)
+    main_engine.add_app(AlertCenterApp)
 
     main_window = MainWindow(main_engine, main_engine.event_engine)
     main_window.showMaximized()

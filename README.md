@@ -58,6 +58,69 @@ python run_vnpy.py
 
 首次启动时，`vnpy` 会在工程目录下 `.vntrader/` 生成配置和日志目录。
 
+## AKShare 准实时提醒（模块一/二/三/四）
+
+如果你想先做“只提醒、不实盘”的最小闭环，可以直接运行独立脚本：
+
+```bash
+cd /Users/zezhang/Documents/codex/vnpy
+source .venv/bin/activate
+python scripts/akshare_realtime_alert.py
+```
+
+这个脚本当前的默认行为是：
+
+- 默认监控 `2` 只股票：
+  - `601869.SSE`
+  - `600000.SSE`
+- 使用 `5m` 周期
+- 每 `20` 秒轮询一次 `AKShare`
+- 提供三类规则：
+  - 价格突破提醒：最近一根完整 `5m` K 线收盘价首次站上 `6.80`
+  - 止损提醒：最近一根完整 `5m` K 线收盘价首次跌破 `6.55`
+  - 均线提醒：`3/8` 均线首次出现金叉
+- 输出统一中文文案，并区分“观察型提醒”和“风控型提醒”
+- 增加冷却时间和新K线去重，避免同一信号刷屏
+- 非交易时段自动暂停
+- 把触发过的提醒写入 `logs/akshare_realtime_alerts.csv`，方便收盘后复盘
+- 只输出终端中文日志和本地 CSV 记录，不调用任何下单、撤单、持仓逻辑
+
+运行中可以通过 `Ctrl+C` 停止脚本。
+
+配置文件位于 [akshare_realtime_alert.json](/Users/zezhang/Documents/codex/vnpy/config/akshare_realtime_alert.json)，可以直接修改：
+
+- `interval`：当前提醒周期，默认 `5m`
+- `poll_seconds`：轮询间隔秒数
+- `adjust`：复权方式，默认 `qfq`
+- `cooldown_seconds`：同类提醒最小冷却时间
+- `alert_history_path`：提醒记录 CSV 路径
+- `symbols`：监控股票列表，每项包含：
+  - `vt_symbol`
+  - `breakout_price`
+  - `stop_loss_price`
+  - `fast_ma_window`
+  - `slow_ma_window`
+
+如果配置文件缺失、格式错误或 `symbols` 为空，脚本会自动回退到脚本内置默认值，不会直接报废。
+
+## vn.py 内嵌实时提醒
+
+当前仓库还提供了一个已经整合进 `vn.py` 主界面的提醒功能模块：
+
+- 功能菜单名称：`实时提醒`
+- 数据源：`AKShare`
+- 默认周期：`5m`
+- 支持内容：
+  - 配置编辑
+  - 启动/停止提醒
+  - 实时日志
+  - 触发记录表格
+  - 股票状态面板
+  - CSV 记录
+  - macOS 桌面通知
+
+这个 GUI 版本仍然只做提醒，不会触发任何真实下单、撤单、持仓逻辑。
+
 ## 策略学习示例
 
 仓库已经包含一个本地 CTA 策略示例：

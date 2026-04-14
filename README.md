@@ -14,19 +14,19 @@
   - `vnpy_rqdata`
   - `akshare`
 
-首次运行 [run_vnpy.py](/Users/zezhang/Documents/codex/vnpy_test/run_vnpy.py) 时，脚本会自动补齐 `~/.vntrader/vt_setting.json` 的缺省配置：
+首次运行 [run_vnpy.py](/Users/zezhang/Documents/codex/vnpy_test/run_vnpy.py) 时，脚本会自动补齐工程目录下 `.vntrader/vt_setting.json` 的缺省配置：
 
 - macOS 默认字体会改成 `PingFang SC`
 - 默认数据库仍然使用 `sqlite`
 - 默认数据服务会使用仓库内置的本地学习模式 `localdemo`
-- 仓库里的 `strategies/*.py` 会自动同步到 `~/strategies/` 和 `~/.vntrader/strategies/`
+- 仓库里的 `strategies/*.py` 会自动同步到工程目录下 `.vntrader/strategies/`
 
 这样首次启动不会因为没有配置 `RQData` 而误以为程序出错。
 在 `localdemo` 模式下，`CTA回测` 的“下载数据”按钮会为 `1m`、`1h`、`d` 周期生成一份离线示例K线，用来学习回测流程。
 
 ## AkShare 配置
 
-如果你当前只想学习 A 股数据，可以把 [vt_setting.json](/Users/zezhang/.vntrader/vt_setting.json) 中的：
+如果你当前只想学习 A 股数据，可以把工程目录下 `.vntrader/vt_setting.json` 中的：
 
 ```json
 "datafeed.name": "localdemo"
@@ -56,7 +56,7 @@ source .venv/bin/activate
 python run_vnpy.py
 ```
 
-首次启动时，`vnpy` 会在 `~/.vntrader/` 下生成配置和日志目录。
+首次启动时，`vnpy` 会在工程目录下 `.vntrader/` 生成配置和日志目录。
 
 ## 策略学习示例
 
@@ -116,12 +116,12 @@ python -m pip install -r requirements.txt --index-url=https://pypi.doubanio.com/
 如果你要使用 `vnpy_rqdata` 下载历史数据，请把仓库中的 `config/vt_setting.example.json` 内容同步到：
 
 ```bash
-~/.vntrader/vt_setting.json
+.vntrader/vt_setting.json
 ```
 
 然后填入你自己的 `RQData` 用户名和密码。
 
-如果你想切换到 `RQData`，把 `~/.vntrader/vt_setting.json` 中的：
+如果你想切换到 `RQData`，把 `.vntrader/vt_setting.json` 中的：
 
 ```json
 "datafeed.name": "akshare"

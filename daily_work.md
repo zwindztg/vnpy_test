@@ -1,5 +1,14 @@
 # Daily Work Log
 
+## 2026-04-14 18:22:33 +08:00
+
+- 提交号：`<待回填>`
+- 提交信息：`refactor: 工程内隔离vntrader目录，停止写入用户根目录 / isolate vntrader in project and stop writing to home directory`
+- 详细说明：
+  - 更新 [run_vnpy.py](/Users/zezhang/Documents/codex/vnpy/run_vnpy.py)，将 `TRADER_DIR` 固定为工程目录下 `.vntrader`，不再回落到 `~/.vntrader`。
+  - 调整策略与扩展包同步逻辑，仅同步到工程目录下 `.vntrader`，不再写入 `~/strategies`、`~/vnpy_akshare`、`~/vnpy_localdemo` 等用户根目录路径。
+  - 更新 [README.md](/Users/zezhang/Documents/codex/vnpy/README.md) 的目录说明，统一为工程内 `.vntrader` 方案，避免后续使用时混淆。
+
 ## 2026-04-14 00:05:45 +08:00
 
 - 提交号：`29b913c`

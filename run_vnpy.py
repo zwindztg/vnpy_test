@@ -231,13 +231,10 @@ def should_reset_backtester_settings(current: dict) -> bool:
 
 
 def get_trader_dir() -> Path:
-    """返回与 vn.py 内部一致的配置目录。"""
-    # 如果当前工作目录下已经有 .vntrader，就跟随 vn.py 使用本地目录。
-    local_trader_dir = Path.cwd() / ".vntrader"
-    if local_trader_dir.exists():
-        return local_trader_dir
-
-    trader_dir = Path.home() / ".vntrader"
+    """返回工程内的 vn.py 配置目录，避免写入用户根目录。"""
+    # 固定使用脚本所在工程目录，确保配置、缓存和日志都留在项目内。
+    project_dir = Path(__file__).resolve().parent
+    trader_dir = project_dir / ".vntrader"
     trader_dir.mkdir(parents=True, exist_ok=True)
     return trader_dir
 
@@ -1021,13 +1018,8 @@ def sync_local_strategies() -> None:
     if not project_strategy_dir.exists():
         return
 
-    # vn.py appends TRADER_DIR to sys.path. With the default startup flow this
-    # resolves to the user's home directory, while runtime data stays under
-    # ~/.vntrader. Sync to both locations so CTA strategy discovery works.
-    target_dirs = [
-        Path.home() / "strategies",
-        Path.home() / ".vntrader" / "strategies",
-    ]
+    # 只同步到工程内 .vntrader，避免写入 ~/strategies 或 ~/.vntrader。
+    target_dirs = [get_trader_dir() / "strategies"]
 
     for target_dir in target_dirs:
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -1041,7 +1033,8 @@ def sync_local_packages() -> None:
     """Copy repo-local vnpy extension packages into vnpy import paths."""
     project_dir = Path(__file__).resolve().parent
     package_names = ["vnpy_localdemo", "vnpy_akshare"]
-    target_dirs = [Path.home(), Path.home() / ".vntrader"]
+    # 只同步到工程内 .vntrader，避免污染用户根目录。
+    target_dirs = [get_trader_dir()]
 
     for package_name in package_names:
         source_dir = project_dir / package_name

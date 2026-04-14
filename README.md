@@ -73,12 +73,13 @@ python scripts/akshare_realtime_alert.py
 - 默认监控 `2` 只股票：
   - `601869.SSE`
   - `600000.SSE`
-- 使用 `5m` 周期
+- 默认使用 `5m` 周期
 - 每 `20` 秒轮询一次 `AKShare`
-- 提供三类规则：
-  - 价格突破提醒：最近一根完整 `5m` K 线收盘价首次站上 `6.80`
-  - 止损提醒：最近一根完整 `5m` K 线收盘价首次跌破 `6.55`
-  - 均线提醒：`3/8` 均线首次出现金叉
+- 每只股票可以单独选择提醒策略：
+  - `基础提醒策略（BasicAlertStrategy）`
+  - `A股长仓学习策略（LessonAShareLongOnlyStrategy）`
+  - `A股唐奇安突破策略（LessonDonchianAShareStrategy）`
+  - `A股短线放量突破策略（LessonVolumeBreakoutAShareStrategy）`
 - 输出统一中文文案，并区分“观察型提醒”和“风控型提醒”
 - 增加冷却时间和新K线去重，避免同一信号刷屏
 - 非交易时段自动暂停
@@ -89,19 +90,38 @@ python scripts/akshare_realtime_alert.py
 
 配置文件位于 [akshare_realtime_alert.json](/Users/zezhang/Documents/codex/vnpy/config/akshare_realtime_alert.json)，可以直接修改：
 
-- `interval`：当前提醒周期，默认 `5m`
+- `interval`：当前提醒周期，支持 `1m`、`5m`、`15m`、`30m`
 - `poll_seconds`：轮询间隔秒数
 - `adjust`：复权方式，默认 `qfq`
 - `cooldown_seconds`：同类提醒最小冷却时间
+- `notification_enabled`：是否启用桌面通知
 - `alert_history_path`：提醒记录 CSV 路径
 - `symbols`：监控股票列表，每项包含：
   - `vt_symbol`
+  - `strategy_name`
+  - `params`
+  - `enabled`
+
+其中 `params` 会跟随策略变化：
+
+- `BasicAlertStrategy`
   - `breakout_price`
   - `stop_loss_price`
   - `fast_ma_window`
   - `slow_ma_window`
+- `LessonAShareLongOnlyStrategy`
+  - `fast_window`
+  - `slow_window`
+- `LessonDonchianAShareStrategy`
+  - `entry_window`
+  - `exit_window`
+- `LessonVolumeBreakoutAShareStrategy`
+  - `breakout_window`
+  - `exit_window`
+  - `volume_window`
+  - `volume_ratio`
 
-如果配置文件缺失、格式错误或 `symbols` 为空，脚本会自动回退到脚本内置默认值，不会直接报废。
+如果配置文件缺失、格式错误或 `symbols` 为空，脚本会自动回退到脚本内置默认值，不会直接报废。旧版固定字段配置也会自动迁移为 `BasicAlertStrategy`。
 
 ## vn.py 内嵌实时提醒
 
@@ -110,8 +130,12 @@ python scripts/akshare_realtime_alert.py
 - 功能菜单名称：`实时提醒`
 - 数据源：`AKShare`
 - 默认周期：`5m`
+- GUI 当前支持切换 `1m`、`5m`、`15m`、`30m`
 - 支持内容：
   - 配置编辑
+  - 每只股票单独选择提醒策略
+  - 策略参数动态切换
+  - 模拟时间单次测试
   - 启动/停止提醒
   - 实时日志
   - 触发记录表格
@@ -120,6 +144,24 @@ python scripts/akshare_realtime_alert.py
   - macOS 桌面通知
 
 这个 GUI 版本仍然只做提醒，不会触发任何真实下单、撤单、持仓逻辑。
+
+项目在启动 `run_vnpy.py` 和独立提醒脚本时，会自动在当前 Python 进程里绕过 `HTTP_PROXY / HTTPS_PROXY / ALL_PROXY` 等代理环境变量。  
+这只影响项目自身的网络请求，不会修改你的系统代理，也不会影响 Codex 对话本身。
+
+如果你在非交易时段也想测试 GUI，可以直接在“实时提醒”窗口里：
+
+1. 设置股票、策略和参数
+2. 选择“模拟时间”，例如昨天 `14:55:00`
+3. 点击“单次测试”
+
+这样系统会用该时间点之前的分钟历史数据做一轮提醒计算，并把结果直接写到日志区、状态表和记录表里，不需要等到盘中才能验证界面是否可用。
+
+如果远程分钟线接口暂时不可用，单次测试会优先尝试回退到项目本地数据库中的历史数据：
+
+- 有同周期分钟线时，继续按分钟级回放
+- 没有分钟线但有日线时，会退回本地日线做演示回放
+
+界面日志会明确写出当前是否使用了本地 fallback，方便区分“真实分钟回放”和“本地演示回放”。
 
 ## 策略学习示例
 

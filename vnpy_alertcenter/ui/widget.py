@@ -2,20 +2,30 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from vnpy.event import Event
-from vnpy.trader.ui import QtCore, QtGui, QtWidgets
+from vnpy.trader.ui import QtCore, QtWidgets
 
 from ..core import (
+    BASIC_ALERT_STRATEGY,
+    CHINA_TZ,
     MAX_SYMBOL_COUNT,
+    STRATEGY_ORDER,
     AppConfig,
     RecordData,
     RunnerStatusData,
+    SUPPORTED_INTERVALS,
     SymbolConfig,
     SymbolStateData,
     build_default_state,
+    ensure_valid_symbol_config,
+    get_default_strategy_params,
+    get_strategy_definition,
+    get_strategy_display_name,
+    normalize_strategy_name,
 )
 from ..engine import (
     APP_NAME,
@@ -28,15 +38,25 @@ from ..engine import (
 
 
 @dataclass
+class ParamInputWidgets:
+    """保存单个参数格子的标签和输入框。"""
+
+    container: QtWidgets.QWidget
+    label: QtWidgets.QLabel
+    editor: QtWidgets.QDoubleSpinBox
+    spec_name: str | None = None
+
+
+@dataclass
 class SymbolRowWidgets:
     """保存一行股票配置输入控件。"""
 
     enabled: QtWidgets.QCheckBox
     vt_symbol: QtWidgets.QLineEdit
-    breakout_price: QtWidgets.QDoubleSpinBox
-    stop_loss_price: QtWidgets.QDoubleSpinBox
-    fast_ma_window: QtWidgets.QSpinBox
-    slow_ma_window: QtWidgets.QSpinBox
+    strategy_combo: QtWidgets.QComboBox
+    params: list[ParamInputWidgets]
+    current_strategy_name: str = BASIC_ALERT_STRATEGY
+    cached_params: dict[str, dict[str, float | int]] = field(default_factory=dict)
 
 
 class AlertCenterWidget(QtWidgets.QWidget):
@@ -50,11 +70,10 @@ class AlertCenterWidget(QtWidgets.QWidget):
     STATE_HEADERS: tuple[str, ...] = (
         "股票",
         "启用",
+        "策略",
         "最新K线",
         "最新收盘",
-        "突破状态",
-        "止损状态",
-        "均线状态",
+        "信号状态",
         "最近提醒",
         "最近错误",
         "运行状态",
@@ -62,6 +81,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
     RECORD_HEADERS: tuple[str, ...] = (
         "时间",
         "股票",
+        "策略",
         "周期",
         "规则",
         "级别",
@@ -89,7 +109,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
     def init_ui(self) -> None:
         """初始化整个窗口布局。"""
         self.setWindowTitle("AKShare 实时提醒")
-        self.resize(1480, 920)
+        self.resize(1600, 940)
 
         layout = QtWidgets.QVBoxLayout()
         layout.addLayout(self.create_control_bar())
@@ -105,18 +125,21 @@ class AlertCenterWidget(QtWidgets.QWidget):
 
         self.load_button = QtWidgets.QPushButton("加载配置")
         self.save_button = QtWidgets.QPushButton("保存配置")
+        self.test_button = QtWidgets.QPushButton("单次测试")
         self.start_button = QtWidgets.QPushButton("启动提醒")
         self.stop_button = QtWidgets.QPushButton("停止提醒")
         self.status_label = QtWidgets.QLabel("未启动")
-        self.status_label.setMinimumWidth(220)
+        self.status_label.setMinimumWidth(260)
 
         self.load_button.clicked.connect(self.load_config_from_engine)
         self.save_button.clicked.connect(self.save_form_config)
+        self.test_button.clicked.connect(self.run_preview_once)
         self.start_button.clicked.connect(self.start_alerting)
         self.stop_button.clicked.connect(self.stop_alerting)
 
         layout.addWidget(self.load_button)
         layout.addWidget(self.save_button)
+        layout.addWidget(self.test_button)
         layout.addWidget(self.start_button)
         layout.addWidget(self.stop_button)
         layout.addStretch(1)
@@ -130,7 +153,8 @@ class AlertCenterWidget(QtWidgets.QWidget):
         form = QtWidgets.QFormLayout()
 
         self.interval_combo = QtWidgets.QComboBox()
-        self.interval_combo.addItem("5m", "5m")
+        for interval in SUPPORTED_INTERVALS:
+            self.interval_combo.addItem(interval, interval)
 
         self.poll_spin = QtWidgets.QSpinBox()
         self.poll_spin.setRange(5, 3600)
@@ -146,12 +170,17 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.adjust_combo.addItem("不复权", "")
 
         self.notification_checkbox = QtWidgets.QCheckBox("启用桌面通知")
+        self.preview_time_edit = QtWidgets.QDateTimeEdit()
+        self.preview_time_edit.setCalendarPopup(True)
+        self.preview_time_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+        self.preview_time_edit.setDateTime(self.build_default_preview_qdatetime())
 
         form.addRow("提醒周期", self.interval_combo)
         form.addRow("轮询间隔", self.poll_spin)
         form.addRow("冷却时间", self.cooldown_spin)
         form.addRow("复权方式", self.adjust_combo)
         form.addRow("", self.notification_checkbox)
+        form.addRow("模拟时间", self.preview_time_edit)
 
         group.setLayout(form)
         return group
@@ -160,31 +189,42 @@ class AlertCenterWidget(QtWidgets.QWidget):
         """创建股票配置区域。"""
         group = QtWidgets.QGroupBox("股票配置（最多 3 只）")
         grid = QtWidgets.QGridLayout()
+        grid.setColumnStretch(2, 1)
 
-        headers = ("启用", "股票代码", "突破价", "止损价", "快均线", "慢均线")
+        headers = ("启用", "股票代码", "提醒策略", "参数1", "参数2", "参数3", "参数4")
         for column, title in enumerate(headers):
             label = QtWidgets.QLabel(title)
             label.setStyleSheet("font-weight: 600;")
             grid.addWidget(label, 0, column)
 
         for row in range(MAX_SYMBOL_COUNT):
+            strategy_combo = QtWidgets.QComboBox()
+            for strategy_name in STRATEGY_ORDER:
+                strategy_combo.addItem(get_strategy_display_name(strategy_name), strategy_name)
+
+            param_widgets: list[ParamInputWidgets] = []
             row_widgets = SymbolRowWidgets(
                 enabled=QtWidgets.QCheckBox(),
                 vt_symbol=QtWidgets.QLineEdit(),
-                breakout_price=self.create_price_spinbox(),
-                stop_loss_price=self.create_price_spinbox(),
-                fast_ma_window=self.create_window_spinbox(),
-                slow_ma_window=self.create_window_spinbox(),
+                strategy_combo=strategy_combo,
+                params=param_widgets,
             )
             row_widgets.vt_symbol.setPlaceholderText("例如 601869.SSE")
             self.row_widgets.append(row_widgets)
 
             grid.addWidget(row_widgets.enabled, row + 1, 0)
             grid.addWidget(row_widgets.vt_symbol, row + 1, 1)
-            grid.addWidget(row_widgets.breakout_price, row + 1, 2)
-            grid.addWidget(row_widgets.stop_loss_price, row + 1, 3)
-            grid.addWidget(row_widgets.fast_ma_window, row + 1, 4)
-            grid.addWidget(row_widgets.slow_ma_window, row + 1, 5)
+            grid.addWidget(row_widgets.strategy_combo, row + 1, 2)
+
+            for column in range(4):
+                param_input = self.create_param_input()
+                param_widgets.append(param_input)
+                grid.addWidget(param_input.container, row + 1, column + 3)
+
+            row_widgets.strategy_combo.currentIndexChanged.connect(
+                lambda _value, row_index=row: self.on_strategy_changed(row_index)
+            )
+            self.apply_strategy_to_row(row_widgets, BASIC_ALERT_STRATEGY)
 
         group.setLayout(grid)
         return group
@@ -246,19 +286,25 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.record_table.horizontalHeader().setStretchLastSection(True)
         return self.record_table
 
-    def create_price_spinbox(self) -> QtWidgets.QDoubleSpinBox:
-        """创建价格输入框。"""
-        spinbox = QtWidgets.QDoubleSpinBox()
-        spinbox.setDecimals(3)
-        spinbox.setRange(0.0, 100000.0)
-        spinbox.setSingleStep(0.01)
-        return spinbox
+    def create_param_input(self) -> ParamInputWidgets:
+        """创建一组“参数标签 + 输入框”控件。"""
+        container = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
 
-    def create_window_spinbox(self) -> QtWidgets.QSpinBox:
-        """创建均线窗口输入框。"""
-        spinbox = QtWidgets.QSpinBox()
-        spinbox.setRange(1, 250)
-        return spinbox
+        label = QtWidgets.QLabel("未使用")
+        label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
+        editor = QtWidgets.QDoubleSpinBox()
+        editor.setRange(0.0, 100000.0)
+        editor.setDecimals(0)
+        editor.setSingleStep(1)
+
+        layout.addWidget(label)
+        layout.addWidget(editor)
+        container.setLayout(layout)
+        return ParamInputWidgets(container=container, label=label, editor=editor)
 
     def register_event(self) -> None:
         """注册引擎事件。"""
@@ -281,6 +327,17 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.refresh_runtime_info()
         self.append_log("INFO", "UI", "已从配置文件重新加载提醒设置。")
 
+    def reset_row(self, row_widgets: SymbolRowWidgets) -> None:
+        """把某一行恢复为默认展示。"""
+        row_widgets.enabled.setChecked(False)
+        row_widgets.vt_symbol.setText("")
+        row_widgets.cached_params.clear()
+        row_widgets.strategy_combo.blockSignals(True)
+        self.set_combo_data(row_widgets.strategy_combo, BASIC_ALERT_STRATEGY)
+        row_widgets.strategy_combo.blockSignals(False)
+        row_widgets.current_strategy_name = BASIC_ALERT_STRATEGY
+        self.apply_strategy_to_row(row_widgets, BASIC_ALERT_STRATEGY)
+
     def load_config_to_form(self, config: AppConfig) -> None:
         """把配置对象回填到表单。"""
         self.set_combo_data(self.interval_combo, config.interval)
@@ -290,43 +347,111 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.notification_checkbox.setChecked(config.notification_enabled)
 
         for row_widgets in self.row_widgets:
-            row_widgets.enabled.setChecked(False)
-            row_widgets.vt_symbol.setText("")
-            row_widgets.breakout_price.setValue(0.0)
-            row_widgets.stop_loss_price.setValue(0.0)
-            row_widgets.fast_ma_window.setValue(3)
-            row_widgets.slow_ma_window.setValue(8)
+            self.reset_row(row_widgets)
 
         for index, symbol in enumerate(config.symbol_configs[:MAX_SYMBOL_COUNT]):
             row_widgets = self.row_widgets[index]
             row_widgets.enabled.setChecked(symbol.enabled)
             row_widgets.vt_symbol.setText(symbol.vt_symbol)
-            row_widgets.breakout_price.setValue(symbol.breakout_price)
-            row_widgets.stop_loss_price.setValue(symbol.stop_loss_price)
-            row_widgets.fast_ma_window.setValue(symbol.fast_ma_window)
-            row_widgets.slow_ma_window.setValue(symbol.slow_ma_window)
+            row_widgets.cached_params[symbol.strategy_name] = dict(symbol.params)
+            row_widgets.strategy_combo.blockSignals(True)
+            self.set_combo_data(row_widgets.strategy_combo, symbol.strategy_name)
+            row_widgets.strategy_combo.blockSignals(False)
+            row_widgets.current_strategy_name = symbol.strategy_name
+            self.apply_strategy_to_row(row_widgets, symbol.strategy_name, symbol.params)
+
+    def collect_strategy_params(self, row_widgets: SymbolRowWidgets, strategy_name: str) -> dict[str, float | int]:
+        """按当前策略读取一行参数。"""
+        params: dict[str, float | int] = {}
+        for spec, param_input in zip(get_strategy_definition(strategy_name).param_specs, row_widgets.params):
+            value = param_input.editor.value()
+            if spec.kind == "int":
+                params[spec.name] = int(round(value))
+            else:
+                params[spec.name] = round(float(value), spec.decimals)
+        return params
+
+    def cache_current_row_params(self, row_widgets: SymbolRowWidgets) -> None:
+        """在切换策略前缓存当前策略的参数值。"""
+        strategy_name = normalize_strategy_name(row_widgets.current_strategy_name)
+        row_widgets.cached_params[strategy_name] = self.collect_strategy_params(row_widgets, strategy_name)
+
+    def apply_strategy_to_row(
+        self,
+        row_widgets: SymbolRowWidgets,
+        strategy_name: str,
+        params: dict[str, float | int] | None = None,
+    ) -> None:
+        """按策略定义刷新某一行的参数标签和输入框。"""
+        definition = get_strategy_definition(strategy_name)
+        effective_params = get_default_strategy_params(strategy_name)
+        if strategy_name in row_widgets.cached_params:
+            effective_params.update(row_widgets.cached_params[strategy_name])
+        if params:
+            effective_params.update(params)
+        row_widgets.cached_params[strategy_name] = dict(effective_params)
+
+        for index, param_input in enumerate(row_widgets.params):
+            if index < len(definition.param_specs):
+                spec = definition.param_specs[index]
+                value = effective_params.get(spec.name, spec.default)
+
+                param_input.spec_name = spec.name
+                param_input.label.setText(spec.label)
+                param_input.editor.setEnabled(True)
+                param_input.editor.setRange(spec.minimum, spec.maximum)
+                param_input.editor.setDecimals(spec.decimals)
+                param_input.editor.setSingleStep(spec.step)
+                param_input.editor.setValue(float(value))
+            else:
+                param_input.spec_name = None
+                param_input.label.setText("未使用")
+                param_input.editor.setEnabled(False)
+                param_input.editor.setRange(0.0, 0.0)
+                param_input.editor.setDecimals(0)
+                param_input.editor.setSingleStep(1)
+                param_input.editor.setValue(0.0)
+
+    def on_strategy_changed(self, row_index: int) -> None:
+        """切换策略时动态刷新该行参数区。"""
+        row_widgets = self.row_widgets[row_index]
+        self.cache_current_row_params(row_widgets)
+        strategy_name = normalize_strategy_name(str(row_widgets.strategy_combo.currentData()))
+        row_widgets.current_strategy_name = strategy_name
+        self.apply_strategy_to_row(row_widgets, strategy_name)
 
     def collect_config_from_form(self) -> AppConfig:
         """把当前表单值组装成配置对象。"""
         symbol_configs: list[SymbolConfig] = []
+        seen_symbols: set[str] = set()
         for row_widgets in self.row_widgets:
             vt_symbol = row_widgets.vt_symbol.text().strip().upper()
             if not vt_symbol:
                 continue
 
-            symbol_configs.append(
-                SymbolConfig(
-                    vt_symbol=vt_symbol,
-                    breakout_price=row_widgets.breakout_price.value(),
-                    stop_loss_price=row_widgets.stop_loss_price.value(),
-                    fast_ma_window=row_widgets.fast_ma_window.value(),
-                    slow_ma_window=row_widgets.slow_ma_window.value(),
-                    enabled=row_widgets.enabled.isChecked(),
-                )
+            strategy_name = normalize_strategy_name(str(row_widgets.strategy_combo.currentData()))
+            params = self.collect_strategy_params(row_widgets, strategy_name)
+            symbol_config = SymbolConfig(
+                vt_symbol=vt_symbol,
+                strategy_name=strategy_name,
+                params=params,
+                enabled=row_widgets.enabled.isChecked(),
             )
+            try:
+                symbol_config = ensure_valid_symbol_config(symbol_config)
+            except ValueError as exc:
+                raise ValueError(f"{vt_symbol} 的参数不合法：{exc}") from exc
+
+            if symbol_config.vt_symbol in seen_symbols:
+                raise ValueError(f"{symbol_config.vt_symbol} 重复出现，请删除重复股票。")
+
+            seen_symbols.add(symbol_config.vt_symbol)
+            symbol_configs.append(symbol_config)
 
         if not symbol_configs:
             raise ValueError("请至少填写一只股票代码。")
+        if not any(symbol.enabled for symbol in symbol_configs):
+            raise ValueError("请至少启用一只股票。")
 
         return AppConfig(
             interval=str(self.interval_combo.currentData()),
@@ -349,6 +474,25 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.alert_engine.save_config(config)
         self.current_config = config
         self.populate_state_placeholders(config)
+        self.refresh_runtime_info()
+
+    def run_preview_once(self) -> None:
+        """用历史时间执行单次测试，便于非交易时段验证提醒逻辑。"""
+        try:
+            config = self.collect_config_from_form()
+            preview_dt = self.preview_time_edit.dateTime().toPyDateTime()
+            preview_dt = preview_dt.replace(tzinfo=CHINA_TZ)
+        except ValueError as exc:
+            self.show_warning(str(exc))
+            return
+
+        self.current_config = config
+        self.populate_state_placeholders(config)
+        try:
+            self.alert_engine.run_preview_once(config, preview_dt)
+        except RuntimeError as exc:
+            self.show_warning(str(exc))
+            return
         self.refresh_runtime_info()
 
     def start_alerting(self) -> None:
@@ -424,11 +568,10 @@ class AlertCenterWidget(QtWidgets.QWidget):
         values = [
             data.vt_symbol,
             "是" if data.enabled else "否",
+            get_strategy_display_name(data.strategy_name),
             data.latest_bar_dt,
             data.latest_close,
-            data.breakout_state,
-            data.stop_loss_state,
-            data.cross_state,
+            data.signal_state,
             data.last_alert_at,
             data.last_error,
             data.status,
@@ -449,6 +592,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         values = [
             data.occurred_at,
             data.vt_symbol,
+            get_strategy_display_name(data.strategy_name),
             data.interval,
             data.rule_name,
             data.level,
@@ -480,6 +624,12 @@ class AlertCenterWidget(QtWidgets.QWidget):
         index = combo.findData(value)
         if index >= 0:
             combo.setCurrentIndex(index)
+
+    def build_default_preview_qdatetime(self) -> QtCore.QDateTime:
+        """默认把单次测试时间放在昨天开盘时，方便直接验证历史数据。"""
+        default_dt = datetime.now() - timedelta(days=1)
+        default_dt = default_dt.replace(hour=9, minute=30, second=0, microsecond=0)
+        return QtCore.QDateTime(default_dt)
 
     def show_warning(self, message: str) -> None:
         """统一显示输入或配置错误。"""

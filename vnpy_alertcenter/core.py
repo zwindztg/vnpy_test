@@ -1,20 +1,23 @@
-"""实时提醒 BaseApp 的核心配置、规则、轮询和通知逻辑。"""
+"""实时提醒 BaseApp 的核心配置、策略、轮询和通知逻辑。"""
 
 from __future__ import annotations
 
 import csv
 import json
+import os
+import sqlite3
 import subprocess
 import sys
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from enum import Enum
 from pathlib import Path
 from threading import Event as ThreadEvent
-from typing import Callable
+from typing import Callable, TypeAlias
 
-import akshare as ak
 import pandas as pd
+import requests
 from zoneinfo import ZoneInfo
 
 try:
@@ -33,6 +36,53 @@ DEFAULT_INTERVAL = "5m"
 DEFAULT_POLL_SECONDS = 20
 DEFAULT_ADJUST = "qfq"
 DEFAULT_COOLDOWN_SECONDS = 300
+SUPPORTED_INTERVALS: dict[str, int] = {
+    "1m": 1,
+    "5m": 5,
+    "15m": 15,
+    "30m": 30,
+}
+EASTMONEY_HEADERS: dict[str, str] = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"
+    ),
+    "Referer": "https://quote.eastmoney.com/",
+    "Accept": "*/*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Connection": "close",
+}
+PROJECT_PROXY_ENV_KEYS: tuple[str, ...] = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+)
+
+BASIC_ALERT_STRATEGY = "BasicAlertStrategy"
+LESSON_A_SHARE_LONG_ONLY = "LessonAShareLongOnlyStrategy"
+LESSON_DONCHIAN = "LessonDonchianAShareStrategy"
+LESSON_VOLUME_BREAKOUT = "LessonVolumeBreakoutAShareStrategy"
+
+ParamValue: TypeAlias = int | float
+
+
+@dataclass(frozen=True)
+class ParamSpec:
+    """描述单个策略参数的界面展示与数值约束。"""
+
+    name: str
+    label: str
+    kind: str
+    default: ParamValue
+    minimum: float = 0.0
+    maximum: float = 100000.0
+    decimals: int = 0
+    step: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -40,17 +90,9 @@ class SymbolConfig:
     """保存单只股票的提醒参数。"""
 
     vt_symbol: str
-    breakout_price: float
-    stop_loss_price: float
-    fast_ma_window: int = 3
-    slow_ma_window: int = 8
+    strategy_name: str
+    params: dict[str, ParamValue]
     enabled: bool = True
-
-
-DEFAULT_SYMBOL_CONFIGS: tuple[SymbolConfig, ...] = (
-    SymbolConfig(vt_symbol="601869.SSE", breakout_price=6.80, stop_loss_price=6.55),
-    SymbolConfig(vt_symbol="600000.SSE", breakout_price=12.60, stop_loss_price=12.10),
-)
 
 
 @dataclass(frozen=True)
@@ -79,21 +121,16 @@ class AlertBar:
 
     dt: datetime
     close_price: float
+    high_price: float
+    low_price: float
+    volume: float
 
 
 @dataclass
-class PriceAlertState:
-    """保存价格型提醒的当前状态和冷却时间。"""
+class RuleRuntimeState:
+    """保存通用规则的当前状态和冷却时间。"""
 
     is_triggered: bool = False
-    last_alert_at: datetime | None = None
-
-
-@dataclass
-class CrossAlertState:
-    """保存均线提醒的当前状态和冷却时间。"""
-
-    golden_cross_triggered: bool = False
     last_alert_at: datetime | None = None
 
 
@@ -113,6 +150,7 @@ class RecordData:
 
     occurred_at: str
     vt_symbol: str
+    strategy_name: str
     interval: str
     rule_name: str
     level: str
@@ -127,11 +165,10 @@ class SymbolStateData:
 
     vt_symbol: str
     enabled: bool
+    strategy_name: str
     latest_bar_dt: str = ""
     latest_close: str = ""
-    breakout_state: str = "未触发"
-    stop_loss_state: str = "未触发"
-    cross_state: str = "未触发"
+    signal_state: str = "未触发"
     last_alert_at: str = ""
     last_error: str = ""
     status: str = "未启动"
@@ -147,12 +184,589 @@ class RunnerStatusData:
     updated_at: str
 
 
+@dataclass
+class AlertSignal:
+    """统一表示一条真正要发出的提醒。"""
+
+    rule_name: str
+    level: AlertLevel
+    message: str
+    rule_value: float
+    triggered_bar_dt: datetime
+
+
+@dataclass
+class StrategyEvaluationResult:
+    """策略本轮计算结果。"""
+
+    signal_state: str
+    alerts: list[AlertSignal] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class StrategyDefinition:
+    """描述提醒策略的展示、参数和执行器。"""
+
+    strategy_name: str
+    display_name: str
+    param_specs: tuple[ParamSpec, ...]
+    validator: Callable[[dict[str, ParamValue]], None]
+    evaluator_cls: type["BaseAlertEvaluator"]
+
+
+def get_strategy_display_name(strategy_name: str) -> str:
+    """把策略名转换成和 CTA 界面一致的双语显示文本。"""
+    definition = STRATEGY_REGISTRY.get(strategy_name)
+    if definition:
+        return definition.display_name
+    return STRATEGY_REGISTRY[BASIC_ALERT_STRATEGY].display_name
+
+
+def normalize_strategy_name(strategy_name: str) -> str:
+    """把未知策略名回退到基础提醒策略。"""
+    if strategy_name in STRATEGY_REGISTRY:
+        return strategy_name
+    return BASIC_ALERT_STRATEGY
+
+
+def get_strategy_definition(strategy_name: str) -> StrategyDefinition:
+    """按名称读取策略元数据。"""
+    return STRATEGY_REGISTRY[normalize_strategy_name(strategy_name)]
+
+
+def get_strategy_param_specs(strategy_name: str) -> tuple[ParamSpec, ...]:
+    """读取某个策略的参数说明。"""
+    return get_strategy_definition(strategy_name).param_specs
+
+
+def get_default_strategy_params(strategy_name: str) -> dict[str, ParamValue]:
+    """返回策略默认参数，供 GUI 和配置迁移复用。"""
+    return {
+        spec.name: spec.default
+        for spec in get_strategy_definition(strategy_name).param_specs
+    }
+
+
+def coerce_param_value(spec: ParamSpec, value: object) -> ParamValue:
+    """把参数值转换成策略要求的数值类型。"""
+    raw_value = spec.default if value is None else value
+    try:
+        numeric_value = float(raw_value)
+    except (TypeError, ValueError):
+        numeric_value = float(spec.default)
+
+    if spec.kind == "int":
+        return int(round(numeric_value))
+    return round(numeric_value, spec.decimals)
+
+
+def merge_strategy_params(strategy_name: str, raw_params: dict[str, object] | None) -> dict[str, ParamValue]:
+    """按策略参数表合并默认值和当前配置。"""
+    params = raw_params or {}
+    merged: dict[str, ParamValue] = {}
+    for spec in get_strategy_param_specs(strategy_name):
+        merged[spec.name] = coerce_param_value(spec, params.get(spec.name, spec.default))
+    return merged
+
+
+def validate_basic_params(params: dict[str, ParamValue]) -> None:
+    """校验基础提醒策略参数。"""
+    breakout_price = float(params["breakout_price"])
+    stop_loss_price = float(params["stop_loss_price"])
+    fast_ma_window = int(params["fast_ma_window"])
+    slow_ma_window = int(params["slow_ma_window"])
+
+    if breakout_price <= 0:
+        raise ValueError("突破价必须大于 0。")
+    if stop_loss_price <= 0:
+        raise ValueError("止损价必须大于 0。")
+    if breakout_price <= stop_loss_price:
+        raise ValueError("突破价应高于止损价。")
+    if fast_ma_window <= 0 or slow_ma_window <= 0:
+        raise ValueError("均线周期必须大于 0。")
+    if fast_ma_window >= slow_ma_window:
+        raise ValueError("快均线周期必须小于慢均线周期。")
+
+
+def validate_ma_params(params: dict[str, ParamValue]) -> None:
+    """校验均线提醒策略参数。"""
+    fast_window = int(params["fast_window"])
+    slow_window = int(params["slow_window"])
+    if fast_window <= 0 or slow_window <= 0:
+        raise ValueError("均线周期必须大于 0。")
+    if fast_window >= slow_window:
+        raise ValueError("快均线周期必须小于慢均线周期。")
+
+
+def validate_donchian_params(params: dict[str, ParamValue]) -> None:
+    """校验唐奇安提醒策略参数。"""
+    entry_window = int(params["entry_window"])
+    exit_window = int(params["exit_window"])
+    if entry_window <= 1 or exit_window <= 1:
+        raise ValueError("唐奇安窗口至少需要 2 根 K 线。")
+    if entry_window <= exit_window:
+        raise ValueError("突破观察周期应大于离场观察周期。")
+
+
+def validate_volume_breakout_params(params: dict[str, ParamValue]) -> None:
+    """校验放量突破提醒策略参数。"""
+    breakout_window = int(params["breakout_window"])
+    exit_window = int(params["exit_window"])
+    volume_window = int(params["volume_window"])
+    volume_ratio = float(params["volume_ratio"])
+
+    if breakout_window <= 1 or exit_window <= 1 or volume_window <= 1:
+        raise ValueError("突破、离场和成交量窗口至少需要 2 根 K 线。")
+    if breakout_window <= exit_window:
+        raise ValueError("突破观察周期应大于离场观察周期。")
+    if volume_ratio <= 0:
+        raise ValueError("放量倍数阈值必须大于 0。")
+
+
+class BaseAlertEvaluator:
+    """提醒策略 evaluator 的统一基类。"""
+
+    def evaluate(
+        self,
+        service: "SymbolAlertService",
+        bars: list[AlertBar],
+        now: datetime,
+    ) -> StrategyEvaluationResult:
+        raise NotImplementedError
+
+    def close_series(self, bars: list[AlertBar]) -> pd.Series:
+        """提取收盘价序列。"""
+        return pd.Series([bar.close_price for bar in bars], dtype="float64")
+
+    def high_series(self, bars: list[AlertBar]) -> pd.Series:
+        """提取最高价序列。"""
+        return pd.Series([bar.high_price for bar in bars], dtype="float64")
+
+    def low_series(self, bars: list[AlertBar]) -> pd.Series:
+        """提取最低价序列。"""
+        return pd.Series([bar.low_price for bar in bars], dtype="float64")
+
+    def volume_series(self, bars: list[AlertBar]) -> pd.Series:
+        """提取成交量序列。"""
+        return pd.Series([bar.volume for bar in bars], dtype="float64")
+
+
+class BasicAlertEvaluator(BaseAlertEvaluator):
+    """价格突破、止损和均线观察的基础提醒。"""
+
+    def evaluate(
+        self,
+        service: "SymbolAlertService",
+        bars: list[AlertBar],
+        now: datetime,
+    ) -> StrategyEvaluationResult:
+        params = service.config.params
+        latest_bar = bars[-1]
+        alerts: list[AlertSignal] = []
+
+        breakout_price = float(params["breakout_price"])
+        stop_loss_price = float(params["stop_loss_price"])
+        fast_ma_window = int(params["fast_ma_window"])
+        slow_ma_window = int(params["slow_ma_window"])
+
+        breakout_state = service.get_rule_state("breakout")
+        stop_loss_state = service.get_rule_state("stop_loss")
+        ma_relation_state = service.get_rule_state("ma_relation")
+        golden_cross_state = service.get_rule_state("golden_cross")
+
+        is_above = latest_bar.close_price >= breakout_price
+        if is_above and not breakout_state.is_triggered and service.can_alert(breakout_state, now):
+            alerts.append(
+                AlertSignal(
+                    rule_name="breakout",
+                    level=AlertLevel.OBSERVE,
+                    message=(
+                        f"{service.config.vt_symbol} {service.app_config.interval} 收盘站上 {breakout_price:.3f}，"
+                        f"最新收盘价={latest_bar.close_price:.3f}，建议观察是否继续走强。"
+                    ),
+                    rule_value=latest_bar.close_price,
+                    triggered_bar_dt=latest_bar.dt,
+                )
+            )
+            breakout_state.last_alert_at = now
+        breakout_state.is_triggered = is_above
+
+        is_below = latest_bar.close_price <= stop_loss_price
+        if is_below and not stop_loss_state.is_triggered and service.can_alert(stop_loss_state, now):
+            alerts.append(
+                AlertSignal(
+                    rule_name="stop_loss",
+                    level=AlertLevel.RISK,
+                    message=(
+                        f"{service.config.vt_symbol} {service.app_config.interval} 收盘跌破 {stop_loss_price:.3f}，"
+                        f"最新收盘价={latest_bar.close_price:.3f}，建议检查止损纪律。"
+                    ),
+                    rule_value=latest_bar.close_price,
+                    triggered_bar_dt=latest_bar.dt,
+                )
+            )
+            stop_loss_state.last_alert_at = now
+        stop_loss_state.is_triggered = is_below
+
+        if len(bars) < slow_ma_window + 1:
+            ma_state = "均线数据不足"
+        else:
+            close_series = self.close_series(bars)
+            fast_ma = close_series.rolling(fast_ma_window).mean()
+            slow_ma = close_series.rolling(slow_ma_window).mean()
+
+            fast_ma0 = fast_ma.iloc[-1]
+            fast_ma1 = fast_ma.iloc[-2]
+            slow_ma0 = slow_ma.iloc[-1]
+            slow_ma1 = slow_ma.iloc[-2]
+
+            if pd.isna(fast_ma0) or pd.isna(fast_ma1) or pd.isna(slow_ma0) or pd.isna(slow_ma1):
+                ma_state = "均线数据不足"
+            else:
+                current_above = bool(fast_ma0 >= slow_ma0)
+                cross_over = current_above and fast_ma1 < slow_ma1
+
+                if cross_over and service.can_alert(golden_cross_state, now):
+                    alerts.append(
+                        AlertSignal(
+                            rule_name="golden_cross",
+                            level=AlertLevel.OBSERVE,
+                            message=(
+                                f"{service.config.vt_symbol} {service.app_config.interval} 出现均线金叉，"
+                                f"快线={fast_ma0:.3f}，慢线={slow_ma0:.3f}，建议观察趋势是否转强。"
+                            ),
+                            rule_value=float(fast_ma0 - slow_ma0),
+                            triggered_bar_dt=latest_bar.dt,
+                        )
+                    )
+                    golden_cross_state.last_alert_at = now
+
+                ma_relation_state.is_triggered = current_above
+                ma_state = "均线多头" if current_above else "均线空头"
+
+        signal_parts = [
+            "突破已触发" if breakout_state.is_triggered else "未突破",
+            "跌破止损" if stop_loss_state.is_triggered else "未破止损",
+            ma_state,
+        ]
+        return StrategyEvaluationResult(signal_state=" | ".join(signal_parts), alerts=alerts)
+
+
+class MaCrossAlertEvaluator(BaseAlertEvaluator):
+    """A 股长仓学习策略的提醒版 evaluator。"""
+
+    def evaluate(
+        self,
+        service: "SymbolAlertService",
+        bars: list[AlertBar],
+        now: datetime,
+    ) -> StrategyEvaluationResult:
+        params = service.config.params
+        fast_window = int(params["fast_window"])
+        slow_window = int(params["slow_window"])
+        latest_bar = bars[-1]
+
+        if len(bars) < slow_window + 1:
+            return StrategyEvaluationResult(signal_state="均线数据不足")
+
+        close_series = self.close_series(bars)
+        fast_ma = close_series.rolling(fast_window).mean()
+        slow_ma = close_series.rolling(slow_window).mean()
+
+        fast_ma0 = fast_ma.iloc[-1]
+        fast_ma1 = fast_ma.iloc[-2]
+        slow_ma0 = slow_ma.iloc[-1]
+        slow_ma1 = slow_ma.iloc[-2]
+
+        if pd.isna(fast_ma0) or pd.isna(fast_ma1) or pd.isna(slow_ma0) or pd.isna(slow_ma1):
+            return StrategyEvaluationResult(signal_state="均线数据不足")
+
+        relation_state = service.get_rule_state("ma_relation")
+        golden_state = service.get_rule_state("golden_cross")
+        death_state = service.get_rule_state("death_cross")
+        alerts: list[AlertSignal] = []
+
+        current_above = bool(fast_ma0 >= slow_ma0)
+        cross_over = current_above and fast_ma1 < slow_ma1
+        cross_below = bool(fast_ma0 <= slow_ma0 and fast_ma1 > slow_ma1)
+
+        if cross_over and service.can_alert(golden_state, now):
+            alerts.append(
+                AlertSignal(
+                    rule_name="golden_cross",
+                    level=AlertLevel.OBSERVE,
+                    message=(
+                        f"{service.config.vt_symbol} {service.app_config.interval} 出现均线金叉，"
+                        f"快线={fast_ma0:.3f}，慢线={slow_ma0:.3f}，建议关注多头趋势是否成立。"
+                    ),
+                    rule_value=float(fast_ma0 - slow_ma0),
+                    triggered_bar_dt=latest_bar.dt,
+                )
+            )
+            golden_state.last_alert_at = now
+        elif cross_below and service.can_alert(death_state, now):
+            alerts.append(
+                AlertSignal(
+                    rule_name="death_cross",
+                    level=AlertLevel.RISK,
+                    message=(
+                        f"{service.config.vt_symbol} {service.app_config.interval} 出现均线死叉，"
+                        f"快线={fast_ma0:.3f}，慢线={slow_ma0:.3f}，建议检查离场节奏。"
+                    ),
+                    rule_value=float(fast_ma0 - slow_ma0),
+                    triggered_bar_dt=latest_bar.dt,
+                )
+            )
+            death_state.last_alert_at = now
+
+        relation_state.is_triggered = current_above
+        signal_state = "均线多头" if current_above else "均线空头"
+        return StrategyEvaluationResult(signal_state=signal_state, alerts=alerts)
+
+
+class DonchianAlertEvaluator(BaseAlertEvaluator):
+    """A 股唐奇安突破策略的提醒版 evaluator。"""
+
+    def evaluate(
+        self,
+        service: "SymbolAlertService",
+        bars: list[AlertBar],
+        now: datetime,
+    ) -> StrategyEvaluationResult:
+        params = service.config.params
+        entry_window = int(params["entry_window"])
+        exit_window = int(params["exit_window"])
+        latest_bar = bars[-1]
+
+        required_window = max(entry_window, exit_window) + 1
+        if len(bars) < required_window:
+            return StrategyEvaluationResult(signal_state="唐奇安数据不足")
+
+        high_series = self.high_series(bars)
+        low_series = self.low_series(bars)
+
+        entry_up = high_series.shift(1).rolling(entry_window).max().iloc[-1]
+        exit_down = low_series.shift(1).rolling(exit_window).min().iloc[-1]
+
+        if pd.isna(entry_up) or pd.isna(exit_down):
+            return StrategyEvaluationResult(signal_state="唐奇安数据不足")
+
+        position_state = service.get_rule_state("donchian_long_active")
+        entry_state = service.get_rule_state("donchian_entry")
+        exit_state = service.get_rule_state("donchian_exit")
+        alerts: list[AlertSignal] = []
+
+        current_long = position_state.is_triggered
+        if not current_long and latest_bar.close_price > float(entry_up):
+            if service.can_alert(entry_state, now):
+                alerts.append(
+                    AlertSignal(
+                        rule_name="donchian_breakout",
+                        level=AlertLevel.OBSERVE,
+                        message=(
+                            f"{service.config.vt_symbol} {service.app_config.interval} 收盘突破唐奇安上轨，"
+                            f"收盘价={latest_bar.close_price:.3f}，突破线={float(entry_up):.3f}，建议关注强势延续。"
+                        ),
+                        rule_value=latest_bar.close_price,
+                        triggered_bar_dt=latest_bar.dt,
+                    )
+                )
+                entry_state.last_alert_at = now
+            current_long = True
+        elif current_long and latest_bar.close_price < float(exit_down):
+            if service.can_alert(exit_state, now):
+                alerts.append(
+                    AlertSignal(
+                        rule_name="donchian_exit",
+                        level=AlertLevel.RISK,
+                        message=(
+                            f"{service.config.vt_symbol} {service.app_config.interval} 收盘跌破唐奇安离场线，"
+                            f"收盘价={latest_bar.close_price:.3f}，离场线={float(exit_down):.3f}，建议检查离场执行。"
+                        ),
+                        rule_value=latest_bar.close_price,
+                        triggered_bar_dt=latest_bar.dt,
+                    )
+                )
+                exit_state.last_alert_at = now
+            current_long = False
+
+        position_state.is_triggered = current_long
+        if current_long:
+            signal_state = f"突破有效 | 离场线={float(exit_down):.3f}"
+        else:
+            signal_state = f"观察中 | 突破线={float(entry_up):.3f}"
+        return StrategyEvaluationResult(signal_state=signal_state, alerts=alerts)
+
+
+class VolumeBreakoutAlertEvaluator(BaseAlertEvaluator):
+    """A 股短线放量突破策略的提醒版 evaluator。"""
+
+    def evaluate(
+        self,
+        service: "SymbolAlertService",
+        bars: list[AlertBar],
+        now: datetime,
+    ) -> StrategyEvaluationResult:
+        params = service.config.params
+        breakout_window = int(params["breakout_window"])
+        exit_window = int(params["exit_window"])
+        volume_window = int(params["volume_window"])
+        volume_ratio_threshold = float(params["volume_ratio"])
+        latest_bar = bars[-1]
+
+        required_window = max(breakout_window, exit_window, volume_window) + 1
+        if len(bars) < required_window:
+            return StrategyEvaluationResult(signal_state="放量突破数据不足")
+
+        high_series = self.high_series(bars)
+        low_series = self.low_series(bars)
+        volume_series = self.volume_series(bars)
+
+        entry_up = high_series.shift(1).rolling(breakout_window).max().iloc[-1]
+        exit_down = low_series.shift(1).rolling(exit_window).min().iloc[-1]
+        volume_ma = volume_series.shift(1).rolling(volume_window).mean().iloc[-1]
+
+        if pd.isna(entry_up) or pd.isna(exit_down) or pd.isna(volume_ma):
+            return StrategyEvaluationResult(signal_state="放量突破数据不足")
+
+        volume_ma = float(volume_ma)
+        ratio_value = latest_bar.volume / volume_ma if volume_ma > 0 else 0.0
+
+        position_state = service.get_rule_state("volume_long_active")
+        breakout_state = service.get_rule_state("volume_breakout")
+        exit_state = service.get_rule_state("volume_exit")
+        alerts: list[AlertSignal] = []
+
+        breakout_signal = latest_bar.close_price > float(entry_up) and ratio_value >= volume_ratio_threshold
+        exit_signal = latest_bar.close_price < float(exit_down)
+
+        current_long = position_state.is_triggered
+        if not current_long and breakout_signal:
+            if service.can_alert(breakout_state, now):
+                alerts.append(
+                    AlertSignal(
+                        rule_name="volume_breakout",
+                        level=AlertLevel.OBSERVE,
+                        message=(
+                            f"{service.config.vt_symbol} {service.app_config.interval} 出现放量突破，"
+                            f"收盘价={latest_bar.close_price:.3f}，突破线={float(entry_up):.3f}，"
+                            f"量比={ratio_value:.2f}，建议关注短线跟随机会。"
+                        ),
+                        rule_value=ratio_value,
+                        triggered_bar_dt=latest_bar.dt,
+                    )
+                )
+                breakout_state.last_alert_at = now
+            current_long = True
+        elif current_long and exit_signal:
+            if service.can_alert(exit_state, now):
+                alerts.append(
+                    AlertSignal(
+                        rule_name="volume_exit",
+                        level=AlertLevel.RISK,
+                        message=(
+                            f"{service.config.vt_symbol} {service.app_config.interval} 跌破短线离场线，"
+                            f"收盘价={latest_bar.close_price:.3f}，离场线={float(exit_down):.3f}，建议关注节奏回撤。"
+                        ),
+                        rule_value=latest_bar.close_price,
+                        triggered_bar_dt=latest_bar.dt,
+                    )
+                )
+                exit_state.last_alert_at = now
+            current_long = False
+
+        position_state.is_triggered = current_long
+        if current_long:
+            signal_state = f"放量突破有效 | 离场线={float(exit_down):.3f}"
+        else:
+            signal_state = (
+                f"观察中 | 突破线={float(entry_up):.3f} | 量比={ratio_value:.2f}/{volume_ratio_threshold:.2f}"
+            )
+        return StrategyEvaluationResult(signal_state=signal_state, alerts=alerts)
+
+
+STRATEGY_REGISTRY: dict[str, StrategyDefinition] = {
+    BASIC_ALERT_STRATEGY: StrategyDefinition(
+        strategy_name=BASIC_ALERT_STRATEGY,
+        display_name="基础提醒策略（BasicAlertStrategy）",
+        param_specs=(
+            ParamSpec("breakout_price", "突破价", "float", 6.80, minimum=0.001, decimals=3, step=0.01),
+            ParamSpec("stop_loss_price", "止损价", "float", 6.55, minimum=0.001, decimals=3, step=0.01),
+            ParamSpec("fast_ma_window", "快均线", "int", 3, minimum=1, maximum=250, step=1),
+            ParamSpec("slow_ma_window", "慢均线", "int", 8, minimum=2, maximum=250, step=1),
+        ),
+        validator=validate_basic_params,
+        evaluator_cls=BasicAlertEvaluator,
+    ),
+    LESSON_A_SHARE_LONG_ONLY: StrategyDefinition(
+        strategy_name=LESSON_A_SHARE_LONG_ONLY,
+        display_name="A股长仓学习策略（LessonAShareLongOnlyStrategy）",
+        param_specs=(
+            ParamSpec("fast_window", "快均线", "int", 5, minimum=1, maximum=250, step=1),
+            ParamSpec("slow_window", "慢均线", "int", 20, minimum=2, maximum=250, step=1),
+        ),
+        validator=validate_ma_params,
+        evaluator_cls=MaCrossAlertEvaluator,
+    ),
+    LESSON_DONCHIAN: StrategyDefinition(
+        strategy_name=LESSON_DONCHIAN,
+        display_name="A股唐奇安突破策略（LessonDonchianAShareStrategy）",
+        param_specs=(
+            ParamSpec("entry_window", "突破周期", "int", 20, minimum=2, maximum=250, step=1),
+            ParamSpec("exit_window", "离场周期", "int", 10, minimum=2, maximum=250, step=1),
+        ),
+        validator=validate_donchian_params,
+        evaluator_cls=DonchianAlertEvaluator,
+    ),
+    LESSON_VOLUME_BREAKOUT: StrategyDefinition(
+        strategy_name=LESSON_VOLUME_BREAKOUT,
+        display_name="A股短线放量突破策略（LessonVolumeBreakoutAShareStrategy）",
+        param_specs=(
+            ParamSpec("breakout_window", "突破周期", "int", 5, minimum=2, maximum=250, step=1),
+            ParamSpec("exit_window", "离场周期", "int", 3, minimum=2, maximum=250, step=1),
+            ParamSpec("volume_window", "均量周期", "int", 5, minimum=2, maximum=250, step=1),
+            ParamSpec("volume_ratio", "放量倍数", "float", 1.5, minimum=0.1, maximum=100.0, decimals=2, step=0.1),
+        ),
+        validator=validate_volume_breakout_params,
+        evaluator_cls=VolumeBreakoutAlertEvaluator,
+    ),
+}
+
+STRATEGY_ORDER: tuple[str, ...] = (
+    BASIC_ALERT_STRATEGY,
+    LESSON_A_SHARE_LONG_ONLY,
+    LESSON_DONCHIAN,
+    LESSON_VOLUME_BREAKOUT,
+)
+
+
+DEFAULT_SYMBOL_CONFIGS: tuple[SymbolConfig, ...] = (
+    SymbolConfig(
+        vt_symbol="601869.SSE",
+        strategy_name=BASIC_ALERT_STRATEGY,
+        params=get_default_strategy_params(BASIC_ALERT_STRATEGY),
+    ),
+    SymbolConfig(
+        vt_symbol="600000.SSE",
+        strategy_name=BASIC_ALERT_STRATEGY,
+        params={
+            "breakout_price": 12.60,
+            "stop_loss_price": 12.10,
+            "fast_ma_window": 3,
+            "slow_ma_window": 8,
+        },
+        enabled=False,
+    ),
+)
+
+
 class AlertHistoryWriter:
     """把触发过的提醒写入本地 CSV，方便收盘后复盘。"""
 
     HEADER: tuple[str, ...] = (
         "occurred_at",
         "vt_symbol",
+        "strategy_name",
         "interval",
         "rule_name",
         "level",
@@ -168,6 +782,14 @@ class AlertHistoryWriter:
             with self.path.open("w", encoding="utf-8", newline="") as file:
                 writer = csv.writer(file)
                 writer.writerow(self.HEADER)
+            return
+
+        with self.path.open("r", encoding="utf-8", newline="") as file:
+            reader = csv.reader(file)
+            current_header = tuple(next(reader, []))
+
+        if current_header != self.HEADER:
+            self.migrate_legacy_file()
 
     def write(self, record: RecordData) -> None:
         """按统一字段顺序追加一条提醒记录。"""
@@ -177,6 +799,7 @@ class AlertHistoryWriter:
                 [
                     record.occurred_at,
                     record.vt_symbol,
+                    record.strategy_name,
                     record.interval,
                     record.rule_name,
                     record.level,
@@ -185,6 +808,27 @@ class AlertHistoryWriter:
                     record.message,
                 ]
             )
+
+    def migrate_legacy_file(self) -> None:
+        """把旧版缺少策略列的 CSV 迁移到新结构。"""
+        records = read_recent_records(self.path, limit=100000)
+        with self.path.open("w", encoding="utf-8", newline="") as file:
+            writer = csv.writer(file)
+            writer.writerow(self.HEADER)
+            for record in reversed(records):
+                writer.writerow(
+                    [
+                        record.occurred_at,
+                        record.vt_symbol,
+                        record.strategy_name,
+                        record.interval,
+                        record.rule_name,
+                        record.level,
+                        record.rule_value,
+                        record.triggered_bar_dt,
+                        record.message,
+                    ]
+                )
 
 
 def read_recent_records(path: Path, limit: int = 100) -> list[RecordData]:
@@ -202,6 +846,7 @@ def read_recent_records(path: Path, limit: int = 100) -> list[RecordData]:
             RecordData(
                 occurred_at=str(row.get("occurred_at", "")),
                 vt_symbol=str(row.get("vt_symbol", "")),
+                strategy_name=str(row.get("strategy_name") or BASIC_ALERT_STRATEGY),
                 interval=str(row.get("interval", "")),
                 rule_name=str(row.get("rule_name", "")),
                 level=str(row.get("level", "")),
@@ -228,11 +873,27 @@ def load_json_dict(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def get_project_trader_dir() -> Path:
+    """返回项目内的 .vntrader 目录。"""
+    trader_dir = BASE_DIR / ".vntrader"
+    trader_dir.mkdir(parents=True, exist_ok=True)
+    return trader_dir
+
+
+def get_project_database_path() -> Path:
+    """读取项目当前使用的 SQLite 数据库文件路径。"""
+    trader_dir = get_project_trader_dir()
+    setting_path = trader_dir / "vt_setting.json"
+    current = load_json_dict(setting_path)
+    database_name = str(current.get("database.database") or "database.db")
+    return trader_dir / database_name
+
+
 def load_app_config(path: Path = DEFAULT_CONFIG_PATH) -> AppConfig:
     """从 JSON 读取提醒参数，缺失项回退到默认值。"""
     current = load_json_dict(path)
 
-    interval = str(current.get("interval") or DEFAULT_INTERVAL)
+    interval = normalize_interval(str(current.get("interval") or DEFAULT_INTERVAL))
     poll_seconds = int(current.get("poll_seconds") or DEFAULT_POLL_SECONDS)
     adjust = str(current.get("adjust") or DEFAULT_ADJUST)
     cooldown_seconds = int(current.get("cooldown_seconds") or DEFAULT_COOLDOWN_SECONDS)
@@ -262,7 +923,7 @@ def save_app_config(config: AppConfig, path: Path = DEFAULT_CONFIG_PATH) -> None
     path.parent.mkdir(parents=True, exist_ok=True)
 
     payload = {
-        "interval": config.interval,
+        "interval": normalize_interval(config.interval),
         "poll_seconds": config.poll_seconds,
         "adjust": config.adjust,
         "cooldown_seconds": config.cooldown_seconds,
@@ -271,10 +932,8 @@ def save_app_config(config: AppConfig, path: Path = DEFAULT_CONFIG_PATH) -> None
         "symbols": [
             {
                 "vt_symbol": symbol.vt_symbol,
-                "breakout_price": symbol.breakout_price,
-                "stop_loss_price": symbol.stop_loss_price,
-                "fast_ma_window": symbol.fast_ma_window,
-                "slow_ma_window": symbol.slow_ma_window,
+                "strategy_name": symbol.strategy_name,
+                "params": merge_strategy_params(symbol.strategy_name, symbol.params),
                 "enabled": symbol.enabled,
             }
             for symbol in config.symbol_configs[:MAX_SYMBOL_COUNT]
@@ -284,32 +943,54 @@ def save_app_config(config: AppConfig, path: Path = DEFAULT_CONFIG_PATH) -> None
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def build_symbol_config_from_json(item: dict[str, object]) -> SymbolConfig | None:
+    """兼容旧配置和新配置，构建单只股票参数。"""
+    vt_symbol = str(item.get("vt_symbol") or "").strip().upper()
+    if not vt_symbol:
+        return None
+
+    strategy_name = normalize_strategy_name(str(item.get("strategy_name") or BASIC_ALERT_STRATEGY))
+    params_from_payload = item.get("params")
+    raw_params: dict[str, object] = {}
+    if isinstance(params_from_payload, dict):
+        raw_params.update(params_from_payload)
+
+    # 兼容旧版固定字段配置，自动迁移为基础提醒策略。
+    for legacy_key in ("breakout_price", "stop_loss_price", "fast_ma_window", "slow_ma_window"):
+        if legacy_key in item and legacy_key not in raw_params:
+            raw_params[legacy_key] = item.get(legacy_key)
+
+    config = SymbolConfig(
+        vt_symbol=vt_symbol,
+        strategy_name=strategy_name,
+        params=raw_params,
+        enabled=bool(item.get("enabled", True)),
+    )
+
+    try:
+        return normalize_symbol_config(config)
+    except ValueError:
+        return None
+
+
 def parse_symbol_configs(raw_symbols: object) -> tuple[SymbolConfig, ...]:
     """把 JSON 里的 symbols 列表转换成内部配置对象。"""
     if not isinstance(raw_symbols, list) or not raw_symbols:
         return DEFAULT_SYMBOL_CONFIGS
 
     configs: list[SymbolConfig] = []
+    seen_symbols: set[str] = set()
     for item in raw_symbols[:MAX_SYMBOL_COUNT]:
         if not isinstance(item, dict):
             continue
 
-        vt_symbol = str(item.get("vt_symbol") or "").strip().upper()
-        if not vt_symbol:
+        config = build_symbol_config_from_json(item)
+        if config is None:
+            continue
+        if config.vt_symbol in seen_symbols:
             continue
 
-        try:
-            config = SymbolConfig(
-                vt_symbol=vt_symbol,
-                breakout_price=float(item.get("breakout_price")),
-                stop_loss_price=float(item.get("stop_loss_price")),
-                fast_ma_window=max(1, int(item.get("fast_ma_window") or 3)),
-                slow_ma_window=max(2, int(item.get("slow_ma_window") or 8)),
-                enabled=bool(item.get("enabled", True)),
-            )
-        except (TypeError, ValueError):
-            continue
-
+        seen_symbols.add(config.vt_symbol)
         configs.append(config)
 
     return tuple(configs) if configs else DEFAULT_SYMBOL_CONFIGS
@@ -320,7 +1001,9 @@ def build_default_state(config: SymbolConfig) -> SymbolStateData:
     return SymbolStateData(
         vt_symbol=config.vt_symbol,
         enabled=config.enabled,
+        strategy_name=config.strategy_name,
         status="已禁用" if not config.enabled else "未启动",
+        signal_state="待运行" if config.enabled else "已禁用",
     )
 
 
@@ -336,6 +1019,53 @@ def split_vt_symbol(vt_symbol: str) -> tuple[str, str]:
     return symbol, exchange
 
 
+def normalize_symbol_config(config: SymbolConfig) -> SymbolConfig:
+    """把单只股票配置规范化，并在出错时给出明确原因。"""
+    symbol, exchange = split_vt_symbol(config.vt_symbol)
+    if exchange not in {"SSE", "SZSE", "BSE"}:
+        raise ValueError(f"{config.vt_symbol} 的交易所后缀不受支持。")
+
+    strategy_name = normalize_strategy_name(config.strategy_name)
+    params = merge_strategy_params(strategy_name, config.params)
+    definition = get_strategy_definition(strategy_name)
+    definition.validator(params)
+
+    return SymbolConfig(
+        vt_symbol=f"{symbol}.{exchange}",
+        strategy_name=strategy_name,
+        params=params,
+        enabled=bool(config.enabled),
+    )
+
+
+def ensure_valid_symbol_config(config: SymbolConfig) -> SymbolConfig:
+    """对外暴露带异常信息的配置校验接口。"""
+    return normalize_symbol_config(config)
+
+
+def validate_symbol_config(config: SymbolConfig) -> bool:
+    """保留布尔型校验接口，方便旧代码复用。"""
+    try:
+        normalize_symbol_config(config)
+    except ValueError:
+        return False
+    return True
+
+
+def normalize_interval(interval: str) -> str:
+    """把周期限制在当前支持的分钟集合里。"""
+    normalized = interval.strip().lower()
+    if normalized in SUPPORTED_INTERVALS:
+        return normalized
+    return DEFAULT_INTERVAL
+
+
+def get_interval_minutes(interval: str) -> int:
+    """根据配置周期返回对应分钟数。"""
+    normalized = normalize_interval(interval)
+    return SUPPORTED_INTERVALS[normalized]
+
+
 def ensure_china_tz(dt: datetime) -> datetime:
     """统一把时间转换为上海时区。"""
     if dt.tzinfo is None:
@@ -343,9 +1073,9 @@ def ensure_china_tz(dt: datetime) -> datetime:
     return dt.astimezone(CHINA_TZ)
 
 
-def floor_to_5m(dt: datetime) -> datetime:
-    """把当前时间向下取整到 5 分钟，用来排除未走完的当根 K 线。"""
-    minute = dt.minute - dt.minute % 5
+def floor_to_interval(dt: datetime, minutes: int) -> datetime:
+    """把当前时间按分钟周期向下取整，用来排除未走完的当根 K 线。"""
+    minute = dt.minute - dt.minute % minutes
     return dt.replace(minute=minute, second=0, microsecond=0)
 
 
@@ -381,6 +1111,160 @@ def stringify_path(path: Path) -> str:
         return str(path.relative_to(BASE_DIR))
     except ValueError:
         return str(path)
+
+
+def fetch_eastmoney_minute_dataframe(
+    symbol: str,
+    period: str,
+    adjust: str,
+    start_dt: datetime,
+    end_dt: datetime,
+) -> pd.DataFrame:
+    """直接请求东财分钟线接口，并补齐更像浏览器的请求头。"""
+    market_code = 1 if symbol.startswith("6") else 0
+    session = requests.Session()
+    session.trust_env = False
+    session.headers.update(EASTMONEY_HEADERS)
+
+    if period == "1":
+        url = "https://push2his.eastmoney.com/api/qt/stock/trends2/get"
+        params = {
+            "fields1": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58",
+            "ut": "7eea3edcaed734bea9cbfc24409ed989",
+            "ndays": "5",
+            "iscr": "0",
+            "secid": f"{market_code}.{symbol}",
+        }
+        response = session.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        data_json = response.json()
+        trends = data_json.get("data", {}).get("trends") or []
+        if not trends:
+            return pd.DataFrame()
+
+        df = pd.DataFrame([item.split(",") for item in trends])
+        df.columns = [
+            "时间",
+            "开盘",
+            "收盘",
+            "最高",
+            "最低",
+            "成交量",
+            "成交额",
+            "均价",
+        ]
+        df["时间"] = pd.to_datetime(df["时间"])
+        df = df[(df["时间"] >= start_dt) & (df["时间"] <= end_dt)].copy()
+        df["时间"] = df["时间"].astype(str)
+        for column in ("开盘", "收盘", "最高", "最低", "成交量", "成交额", "均价"):
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+        return df
+
+    adjust_map = {"": "0", "qfq": "1", "hfq": "2"}
+    url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    params = {
+        "fields1": "f1,f2,f3,f4,f5,f6",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+        "ut": "7eea3edcaed734bea9cbfc24409ed989",
+        "klt": period,
+        "fqt": adjust_map.get(adjust, "0"),
+        "secid": f"{market_code}.{symbol}",
+        "beg": "0",
+        "end": "20500000",
+    }
+    response = session.get(url, params=params, timeout=15)
+    response.raise_for_status()
+    data_json = response.json()
+    klines = data_json.get("data", {}).get("klines") or []
+    if not klines:
+        return pd.DataFrame()
+
+    df = pd.DataFrame([item.split(",") for item in klines])
+    df.columns = [
+        "时间",
+        "开盘",
+        "收盘",
+        "最高",
+        "最低",
+        "成交量",
+        "成交额",
+        "振幅",
+        "涨跌幅",
+        "涨跌额",
+        "换手率",
+    ]
+    df["时间"] = pd.to_datetime(df["时间"])
+    df = df[(df["时间"] >= start_dt) & (df["时间"] <= end_dt)].copy()
+    df["时间"] = df["时间"].astype(str)
+    for column in ("开盘", "收盘", "最高", "最低", "成交量", "成交额", "振幅", "涨跌幅", "涨跌额", "换手率"):
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+    return df[
+        [
+            "时间",
+            "开盘",
+            "收盘",
+            "最高",
+            "最低",
+            "涨跌幅",
+            "涨跌额",
+            "成交量",
+            "成交额",
+            "振幅",
+            "换手率",
+        ]
+    ]
+
+
+def disable_process_proxy_env() -> list[str]:
+    """仅在当前 Python 进程内清理代理变量，避免 AKShare 误走本地代理。"""
+    cleared_keys: list[str] = []
+    for key in PROJECT_PROXY_ENV_KEYS:
+        if os.environ.pop(key, None) is not None:
+            cleared_keys.append(key)
+    return cleared_keys
+
+
+def install_requests_no_proxy() -> bool:
+    """让当前项目进程里的 requests 永远忽略环境代理。"""
+    try:
+        import requests.sessions
+    except Exception:
+        return False
+
+    session_cls = requests.sessions.Session
+    if getattr(session_cls, "_vnpy_no_proxy_installed", False):
+        return False
+
+    original = session_cls.merge_environment_settings
+
+    def merge_environment_settings(self, url, proxies, stream, verify, cert):
+        settings = original(self, url, {}, stream, verify, cert)
+        settings["proxies"] = {}
+        return settings
+
+    session_cls.merge_environment_settings = merge_environment_settings
+    session_cls._vnpy_no_proxy_installed = True
+    return True
+
+
+@contextmanager
+def temporary_proxy_bypass():
+    """临时绕过代理执行网络请求，结束后恢复进程内其他环境变量。"""
+    saved_values: dict[str, str] = {}
+    for key in PROJECT_PROXY_ENV_KEYS:
+        value = os.environ.pop(key, None)
+        if value is not None:
+            saved_values[key] = value
+
+    try:
+        yield
+    finally:
+        os.environ.update(saved_values)
+
+
+# 模块加载时就把 requests 的环境代理读取关掉，避免 GUI 已启动后仍走旧代理。
+install_requests_no_proxy()
 
 
 def make_log(level: str, source: str, message: str) -> LogData:
@@ -435,7 +1319,7 @@ def escape_applescript(text: str) -> str:
 
 
 class SymbolAlertService:
-    """管理单只股票的所有提醒规则。"""
+    """管理单只股票的提醒轮询、去重和策略分发。"""
 
     def __init__(
         self,
@@ -446,19 +1330,27 @@ class SymbolAlertService:
         record_callback: Callable[[RecordData], None],
         state_callback: Callable[[SymbolStateData], None],
     ) -> None:
-        self.config: SymbolConfig = config
+        self.config: SymbolConfig = normalize_symbol_config(config)
         self.app_config: AppConfig = app_config
         self.history_writer: AlertHistoryWriter = history_writer
         self.log_callback = log_callback
         self.record_callback = record_callback
         self.state_callback = state_callback
 
-        self.breakout_state: PriceAlertState = PriceAlertState()
-        self.stop_loss_state: PriceAlertState = PriceAlertState()
-        self.cross_state: CrossAlertState = CrossAlertState()
+        definition = get_strategy_definition(self.config.strategy_name)
+        self.evaluator: BaseAlertEvaluator = definition.evaluator_cls()
+        self.rule_states: dict[str, RuleRuntimeState] = {}
         self.last_completed_bar_dt: datetime | None = None
         self.stale_logged: bool = False
-        self.state: SymbolStateData = build_default_state(config)
+        self.state: SymbolStateData = build_default_state(self.config)
+
+    def get_rule_state(self, key: str) -> RuleRuntimeState:
+        """按名称获取某个规则的运行态。"""
+        state = self.rule_states.get(key)
+        if state is None:
+            state = RuleRuntimeState()
+            self.rule_states[key] = state
+        return state
 
     def emit_state(self) -> None:
         """推送当前状态快照。"""
@@ -468,18 +1360,20 @@ class SymbolAlertService:
         """输出带来源的结构化日志。"""
         self.log_callback(make_log(level, self.config.vt_symbol, message))
 
-    def run_once(self, now: datetime) -> None:
+    def run_once(self, now: datetime, allow_local_fallback: bool = False) -> None:
         """执行单只股票的单轮检查。"""
         if not self.config.enabled:
             self.state.enabled = False
             self.state.status = "已禁用"
+            self.state.signal_state = "已禁用"
             self.emit_state()
             return
 
-        bars = self.fetch_completed_bars(now)
+        bars = self.fetch_completed_bars(now, allow_local_fallback=allow_local_fallback)
         if not bars:
             self.state.status = "暂无完整K线"
             self.state.last_error = ""
+            self.state.signal_state = "等待数据"
             self.log("INFO", "暂无可用的完整K线，跳过本轮。")
             self.emit_state()
             return
@@ -505,32 +1399,49 @@ class SymbolAlertService:
         self.log(
             "INFO",
             (
-                f"轮询成功，K线时间={self.state.latest_bar_dt}，"
-                f"最新收盘价={self.state.latest_close}，"
-                f"突破阈值={self.config.breakout_price:.3f}，"
-                f"止损阈值={self.config.stop_loss_price:.3f}"
+                f"轮询成功，策略={get_strategy_display_name(self.config.strategy_name)}，"
+                f"K线时间={self.state.latest_bar_dt}，最新收盘价={self.state.latest_close}。"
             ),
         )
 
-        self.check_breakout_rule(latest_bar, now)
-        self.check_stop_loss_rule(latest_bar, now)
-        self.check_golden_cross_rule(bars, now)
+        result = self.evaluator.evaluate(self, bars, now)
+        self.state.signal_state = result.signal_state
+        for alert in result.alerts:
+            self.emit_rule_alert(alert)
         self.emit_state()
 
-    def fetch_completed_bars(self, now: datetime) -> list[AlertBar]:
+    def fetch_completed_bars(self, now: datetime, allow_local_fallback: bool = False) -> list[AlertBar]:
         """拉取最近一批分钟数据，并取已完成 K 线。"""
         symbol, _exchange = split_vt_symbol(self.config.vt_symbol)
-        period = self.app_config.interval.removesuffix("m")
-        start_dt = now - timedelta(days=3)
+        interval_minutes = get_interval_minutes(self.app_config.interval)
+        period = str(interval_minutes)
+        start_dt = now - timedelta(days=5)
         end_dt = now + timedelta(minutes=1)
 
-        df = ak.stock_zh_a_hist_min_em(
-            symbol=symbol,
-            start_date=start_dt.strftime("%Y-%m-%d %H:%M:%S"),
-            end_date=end_dt.strftime("%Y-%m-%d %H:%M:%S"),
-            period=period,
-            adjust=self.app_config.adjust,
-        )
+        try:
+            # 这里直接请求东财接口，并显式关闭代理读取，避免 AKShare 默认请求被本地代理或请求头拦截。
+            with temporary_proxy_bypass():
+                df = fetch_eastmoney_minute_dataframe(
+                    symbol=symbol,
+                    period=period,
+                    adjust=self.app_config.adjust,
+                    start_dt=start_dt,
+                    end_dt=end_dt,
+                )
+        except Exception as exc:
+            if not allow_local_fallback:
+                raise
+
+            local_bars, local_interval = self.fetch_local_database_bars(now)
+            if local_bars:
+                self.log(
+                    "INFO",
+                    (
+                        f"远程分钟线获取失败，单次测试已回退到本地 {local_interval} 数据：{exc}"
+                    ),
+                )
+                return local_bars
+            raise ValueError(f"{exc}；同时本地数据库中也没有可用历史数据。") from exc
 
         if df is None or df.empty:
             return []
@@ -539,130 +1450,132 @@ class SymbolAlertService:
         if not parsed:
             return []
 
-        cutoff = floor_to_5m(now)
+        cutoff = floor_to_interval(now, interval_minutes)
         return [bar for bar in parsed if bar.dt < cutoff]
 
+    def fetch_local_database_bars(self, now: datetime) -> tuple[list[AlertBar], str]:
+        """单次测试失败时，优先回退到项目本地数据库。"""
+        symbol, exchange = split_vt_symbol(self.config.vt_symbol)
+        database_path = get_project_database_path()
+        if not database_path.exists():
+            return [], ""
+
+        interval_candidates = [normalize_interval(self.app_config.interval), "d"]
+        seen: set[str] = set()
+        for interval in interval_candidates:
+            if interval in seen:
+                continue
+            seen.add(interval)
+
+            lookback_days = 400 if interval == "d" else 10
+            start_dt = now - timedelta(days=lookback_days)
+            rows = self.query_local_bar_rows(
+                database_path=database_path,
+                symbol=symbol,
+                exchange=exchange,
+                interval=interval,
+                start_dt=start_dt,
+                end_dt=now,
+            )
+            if not rows:
+                continue
+
+            bars = [
+                AlertBar(
+                    dt=ensure_china_tz(datetime.fromisoformat(str(row[0]))),
+                    close_price=float(row[4]),
+                    high_price=float(row[2]),
+                    low_price=float(row[3]),
+                    volume=float(row[5]),
+                )
+                for row in rows
+            ]
+            bars.sort(key=lambda item: item.dt)
+            return bars, interval
+
+        return [], ""
+
+    def query_local_bar_rows(
+        self,
+        database_path: Path,
+        symbol: str,
+        exchange: str,
+        interval: str,
+        start_dt: datetime,
+        end_dt: datetime,
+    ) -> list[tuple]:
+        """从项目内 SQLite 数据库读取指定区间 K 线。"""
+        sql = (
+            "select datetime, open_price, high_price, low_price, close_price, volume "
+            "from dbbardata "
+            "where symbol = ? and exchange = ? and interval = ? "
+            "and datetime >= ? and datetime <= ? "
+            "order by datetime asc"
+        )
+        with sqlite3.connect(database_path) as connection:
+            cursor = connection.execute(
+                sql,
+                (
+                    symbol,
+                    exchange,
+                    interval,
+                    start_dt.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S"),
+                    end_dt.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S"),
+                ),
+            )
+            return list(cursor.fetchall())
+
     def parse_bars(self, df: pd.DataFrame) -> list[AlertBar]:
-        """兼容 AKShare 常见字段名，提取提醒需要的时间和收盘价。"""
+        """兼容 AKShare 常见字段名，提取提醒需要的时间、价格和成交量。"""
         time_column = find_first_existing_column(df, ["时间", "datetime", "day"])
         close_column = find_first_existing_column(df, ["收盘", "close"])
+        high_column = find_first_existing_column(df, ["最高", "high"])
+        low_column = find_first_existing_column(df, ["最低", "low"])
+        volume_column = find_first_existing_column(df, ["成交量", "volume"])
 
         if time_column is None or close_column is None:
-            raise ValueError("AKShare 返回字段缺少时间列或收盘价列，无法解析分钟 K 线。")
+            raise ValueError("返回数据缺少时间列或收盘价列，无法解析 K 线。")
 
         bars: list[AlertBar] = []
         for _, row in df.iterrows():
             dt = ensure_china_tz(pd.to_datetime(row[time_column]).to_pydatetime())
             close_price = float(row[close_column])
-            bars.append(AlertBar(dt=dt, close_price=close_price))
+            high_price = float(row[high_column]) if high_column else close_price
+            low_price = float(row[low_column]) if low_column else close_price
+            volume = float(row[volume_column]) if volume_column else 0.0
+            bars.append(
+                AlertBar(
+                    dt=dt,
+                    close_price=close_price,
+                    high_price=high_price,
+                    low_price=low_price,
+                    volume=volume,
+                )
+            )
 
         bars.sort(key=lambda item: item.dt)
         return bars
 
-    def check_breakout_rule(self, latest_bar: AlertBar, now: datetime) -> None:
-        """首次站上突破阈值时输出观察型提醒。"""
-        is_above = latest_bar.close_price >= self.config.breakout_price
-        if is_above and not self.breakout_state.is_triggered and self.can_alert(self.breakout_state, now):
-            self.emit_rule_alert(
-                rule_name="breakout",
-                level=AlertLevel.OBSERVE,
-                message=(
-                    f"{self.config.vt_symbol} {self.app_config.interval} 收盘站上 {self.config.breakout_price:.3f}，"
-                    f"最新收盘价={latest_bar.close_price:.3f}，建议观察是否继续走强。"
-                ),
-                rule_value=latest_bar.close_price,
-                triggered_bar_dt=latest_bar.dt,
-            )
-            self.breakout_state.last_alert_at = now
-
-        self.breakout_state.is_triggered = is_above
-        self.state.breakout_state = "已触发" if is_above else "未触发"
-
-    def check_stop_loss_rule(self, latest_bar: AlertBar, now: datetime) -> None:
-        """首次跌破止损阈值时输出风控型提醒。"""
-        is_below = latest_bar.close_price <= self.config.stop_loss_price
-        if is_below and not self.stop_loss_state.is_triggered and self.can_alert(self.stop_loss_state, now):
-            self.emit_rule_alert(
-                rule_name="stop_loss",
-                level=AlertLevel.RISK,
-                message=(
-                    f"{self.config.vt_symbol} {self.app_config.interval} 收盘跌破 {self.config.stop_loss_price:.3f}，"
-                    f"最新收盘价={latest_bar.close_price:.3f}，建议检查止损纪律。"
-                ),
-                rule_value=latest_bar.close_price,
-                triggered_bar_dt=latest_bar.dt,
-            )
-            self.stop_loss_state.last_alert_at = now
-
-        self.stop_loss_state.is_triggered = is_below
-        self.state.stop_loss_state = "已触发" if is_below else "未触发"
-
-    def check_golden_cross_rule(self, bars: list[AlertBar], now: datetime) -> None:
-        """短均线上穿长均线时输出观察型提醒。"""
-        if len(bars) < self.config.slow_ma_window + 1:
-            self.state.cross_state = "数据不足"
-            return
-
-        close_series = pd.Series([bar.close_price for bar in bars], dtype="float64")
-        fast_ma = close_series.rolling(self.config.fast_ma_window).mean()
-        slow_ma = close_series.rolling(self.config.slow_ma_window).mean()
-
-        fast_ma0 = fast_ma.iloc[-1]
-        fast_ma1 = fast_ma.iloc[-2]
-        slow_ma0 = slow_ma.iloc[-1]
-        slow_ma1 = slow_ma.iloc[-2]
-
-        if pd.isna(fast_ma0) or pd.isna(fast_ma1) or pd.isna(slow_ma0) or pd.isna(slow_ma1):
-            self.state.cross_state = "数据不足"
-            return
-
-        cross_over = fast_ma0 >= slow_ma0 and fast_ma1 < slow_ma1
-        cross_below = fast_ma0 <= slow_ma0 and fast_ma1 > slow_ma1
-
-        if cross_over and not self.cross_state.golden_cross_triggered and self.can_alert(self.cross_state, now):
-            self.emit_rule_alert(
-                rule_name="golden_cross",
-                level=AlertLevel.OBSERVE,
-                message=(
-                    f"{self.config.vt_symbol} {self.app_config.interval} 出现均线金叉，"
-                    f"快线={fast_ma0:.3f}，慢线={slow_ma0:.3f}，建议观察趋势是否转强。"
-                ),
-                rule_value=float(fast_ma0 - slow_ma0),
-                triggered_bar_dt=bars[-1].dt,
-            )
-            self.cross_state.golden_cross_triggered = True
-            self.cross_state.last_alert_at = now
-        elif cross_below:
-            self.cross_state.golden_cross_triggered = False
-
-        self.state.cross_state = "已触发" if self.cross_state.golden_cross_triggered else "未触发"
-
-    def can_alert(self, state: PriceAlertState | CrossAlertState, now: datetime) -> bool:
+    def can_alert(self, state: RuleRuntimeState, now: datetime) -> bool:
         """为同类提醒增加最小冷却时间，减少来回波动造成的刷屏。"""
         if state.last_alert_at is None:
             return True
         return (now - state.last_alert_at).total_seconds() >= self.app_config.cooldown_seconds
 
-    def emit_rule_alert(
-        self,
-        rule_name: str,
-        level: AlertLevel,
-        message: str,
-        rule_value: float,
-        triggered_bar_dt: datetime,
-    ) -> None:
+    def emit_rule_alert(self, signal: AlertSignal) -> None:
         """统一输出提醒并写入本地记录，方便后续复盘。"""
-        self.log("INFO", f"{level.value}提醒：{message}")
+        self.log("INFO", f"{signal.level.value}提醒：{signal.message}")
 
         record = RecordData(
             occurred_at=datetime.now(CHINA_TZ).isoformat(),
             vt_symbol=self.config.vt_symbol,
+            strategy_name=self.config.strategy_name,
             interval=self.app_config.interval,
-            rule_name=rule_name,
-            level=level.value,
-            rule_value=f"{rule_value:.6f}",
-            triggered_bar_dt=triggered_bar_dt.isoformat(),
-            message=message,
+            rule_name=signal.rule_name,
+            level=signal.level.value,
+            rule_value=f"{signal.rule_value:.6f}",
+            triggered_bar_dt=signal.triggered_bar_dt.isoformat(),
+            message=signal.message,
         )
         self.history_writer.write(record)
         self.record_callback(record)
@@ -707,6 +1620,10 @@ class AlertCenterRunner:
             for symbol_config in config.symbol_configs[:MAX_SYMBOL_COUNT]
         ]
 
+    def get_enabled_services(self) -> list[SymbolAlertService]:
+        """仅返回当前启用的股票服务。"""
+        return [service for service in self.services if service.config.enabled]
+
     def emit_status(self, running: bool, paused: bool, message: str) -> None:
         """推送整体运行状态。"""
         self.status_callback(make_runner_status(running, paused, message))
@@ -722,11 +1639,15 @@ class AlertCenterRunner:
 
     def run_forever(self, stop_event: ThreadEvent) -> None:
         """持续轮询所有股票，直到外部请求停止。"""
-        symbols = "、".join(service.config.vt_symbol for service in self.services)
+        enabled_services = self.get_enabled_services()
+        symbol_text = "、".join(
+            f"{service.config.vt_symbol}[{service.config.strategy_name}]"
+            for service in enabled_services
+        )
         self.log(
             "INFO",
             (
-                f"AKShare 实时提醒已启动，标的={symbols}，周期={self.config.interval}，"
+                f"AKShare 实时提醒已启动，标的={symbol_text}，周期={self.config.interval}，"
                 f"轮询间隔={self.config.poll_seconds}秒，冷却时间={self.config.cooldown_seconds}秒。"
             ),
         )
@@ -747,23 +1668,49 @@ class AlertCenterRunner:
         self.emit_status(False, False, "已停止")
         self.log("INFO", "提醒轮询线程已停止。")
 
-    def run_once(self) -> None:
+    def run_preview_once(self, reference_time: datetime) -> None:
+        """按指定历史时间执行单次回放测试，方便在非交易时段验证 GUI。"""
+        now = ensure_china_tz(reference_time)
+        enabled_services = self.get_enabled_services()
+        symbols = "、".join(
+            f"{service.config.vt_symbol}[{service.config.strategy_name}]"
+            for service in enabled_services
+        )
+        self.log(
+            "INFO",
+            (
+                f"开始执行历史回放测试，模拟时间={now.strftime('%Y-%m-%d %H:%M:%S')}，"
+                f"标的={symbols}，周期={self.config.interval}。"
+            ),
+        )
+        self.emit_initial_states()
+        self.emit_status(False, True, f"测试中：{now.strftime('%Y-%m-%d %H:%M')}")
+        self.run_once(reference_time=now, ignore_trading_time=True, allow_local_fallback=True)
+        self.emit_status(False, False, f"测试完成：{now.strftime('%Y-%m-%d %H:%M')}")
+        self.log("INFO", "历史回放测试已完成。")
+
+    def run_once(
+        self,
+        reference_time: datetime | None = None,
+        ignore_trading_time: bool = False,
+        allow_local_fallback: bool = False,
+    ) -> None:
         """执行一轮全市场小范围轮询。"""
-        now = datetime.now(CHINA_TZ)
-        if not is_a_share_trading_time(now):
+        now = ensure_china_tz(reference_time) if reference_time else datetime.now(CHINA_TZ)
+        if not ignore_trading_time and not is_a_share_trading_time(now):
             if not self.paused_logged:
                 self.log("INFO", "当前非交易时段，暂停提醒。")
                 self.emit_status(True, True, "非交易时段暂停")
                 self.paused_logged = True
             return
 
-        if self.paused_logged:
+        if not ignore_trading_time and self.paused_logged:
             self.emit_status(True, False, "运行中")
-        self.paused_logged = False
+        if not ignore_trading_time:
+            self.paused_logged = False
 
         for service in self.services:
             try:
-                service.run_once(now)
+                service.run_once(now, allow_local_fallback=allow_local_fallback)
             except Exception as exc:
-                service.set_error(f"AKShare 拉取失败：{exc}")
-
+                service.set_error(f"行情数据拉取失败：{exc}")

@@ -1,4 +1,5 @@
 import json
+import os
 import platform
 import signal
 import shutil
@@ -68,6 +69,49 @@ STRATEGY_DISPLAY_NAMES: dict[str, str] = {
     "TestStrategy": "测试策略（TestStrategy）",
     "TurtleSignalStrategy": "海龟交易策略（TurtleSignalStrategy）",
 }
+
+PROJECT_PROXY_ENV_KEYS: tuple[str, ...] = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+)
+
+
+def disable_project_proxy_env() -> list[str]:
+    """仅在当前项目进程里清理代理变量，不影响系统和 Codex 对话。"""
+    cleared_keys: list[str] = []
+    for key in PROJECT_PROXY_ENV_KEYS:
+        if os.environ.pop(key, None) is not None:
+            cleared_keys.append(key)
+    return cleared_keys
+
+
+def install_project_requests_no_proxy() -> bool:
+    """让当前项目进程里的 requests 永远忽略环境代理。"""
+    try:
+        import requests.sessions
+    except Exception:
+        return False
+
+    session_cls = requests.sessions.Session
+    if getattr(session_cls, "_vnpy_no_proxy_installed", False):
+        return False
+
+    original = session_cls.merge_environment_settings
+
+    def merge_environment_settings(self, url, proxies, stream, verify, cert):
+        settings = original(self, url, {}, stream, verify, cert)
+        settings["proxies"] = {}
+        return settings
+
+    session_cls.merge_environment_settings = merge_environment_settings
+    session_cls._vnpy_no_proxy_installed = True
+    return True
 
 
 def normalize_a_share_vt_symbol(vt_symbol: str) -> str:
@@ -1052,6 +1096,11 @@ def sync_local_packages() -> None:
 
 
 def main() -> int:
+    cleared_proxy_keys = disable_project_proxy_env()
+    install_project_requests_no_proxy()
+    if cleared_proxy_keys:
+        print("项目进程已自动绕过代理：", ", ".join(cleared_proxy_keys))
+
     ensure_vnpy_settings()
     ensure_backtester_settings()
     cleanup_database_storage()

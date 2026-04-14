@@ -111,3 +111,12 @@
 - 详细说明：
   - 为本地学习流程提供离线演示数据能力，支持在没有真实行情数据时先打通 `vn.py` 回测流程。
   - 为后续引入真实 A 股数据前的环境验证和功能学习提供基础样例。
+
+## 2026-04-14 22:58:35 +08:00
+
+- 提交号：`待本次提交生成`
+- 提交信息：`feat: 完善实时提醒中心与单次测试回放 / improve alert center strategy UI and preview fallback`
+- 详细说明：
+  - 为 [vnpy_alertcenter/ui/widget.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/ui/widget.py) 增加按股票选择提醒策略的下拉框、动态参数区，以及“模拟时间 + 单次测试”入口，方便在非交易时段验证 GUI。
+  - 重构 [vnpy_alertcenter/core.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/core.py) 的提醒内核，支持策略注册表、启用项过滤、代理自动绕过，以及远程分钟线失败后回退到本地数据库历史数据的单次测试流程。
+  - 更新 [run_vnpy.py](/Users/zezhang/Documents/codex/vnpy/run_vnpy.py)、[scripts/akshare_realtime_alert.py](/Users/zezhang/Documents/codex/vnpy/scripts/akshare_realtime_alert.py)、[config/akshare_realtime_alert.json](/Users/zezhang/Documents/codex/vnpy/config/akshare_realtime_alert.json) 和 [README.md](/Users/zezhang/Documents/codex/vnpy/README.md)，统一提醒中心的默认配置、代理处理和使用说明。

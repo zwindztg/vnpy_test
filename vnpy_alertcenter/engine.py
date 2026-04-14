@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from threading import Event as ThreadEvent
+from threading import Lock
 from threading import Thread
+from threading import current_thread
 
 from vnpy.event import Event
 from vnpy.trader.engine import BaseEngine, MainEngine
@@ -18,6 +20,7 @@ from .core import (
     SymbolStateData,
     load_app_config,
     make_log,
+    make_runner_status,
     read_recent_records,
     save_app_config,
     send_desktop_notification,
@@ -41,6 +44,7 @@ class AlertCenterEngine(BaseEngine):
         self._thread: Thread | None = None
         self._stop_event: ThreadEvent | None = None
         self._runner: AlertCenterRunner | None = None
+        self._thread_lock = Lock()
 
     def load_config(self) -> AppConfig:
         """读取最新配置并缓存。"""
@@ -55,42 +59,75 @@ class AlertCenterEngine(BaseEngine):
 
     def start_alerting(self, config: AppConfig) -> None:
         """启动后台提醒线程。"""
+        with self._thread_lock:
+            if self._thread and self._thread.is_alive():
+                self.write_log("提醒已在运行中，本次启动请求已忽略。")
+                return
+
+            self.current_config = config
+            stop_event = ThreadEvent()
+            runner = AlertCenterRunner(
+                config=config,
+                log_callback=self.process_log,
+                status_callback=self.process_status,
+                record_callback=self.process_record,
+                state_callback=self.process_state,
+            )
+            thread = Thread(
+                target=self._run_loop,
+                args=(runner, stop_event),
+                name="AlertCenterRunner",
+                daemon=True,
+            )
+
+            self._stop_event = stop_event
+            self._runner = runner
+            self._thread = thread
+
+        thread.start()
+
+    def run_preview_once(self, config: AppConfig, reference_time) -> None:
+        """按指定时间执行单次历史回放测试。"""
         if self.is_running():
-            self.write_log("提醒已在运行中，本次启动请求已忽略。")
-            return
+            raise RuntimeError("请先停止当前实时提醒，再执行单次测试。")
 
         self.current_config = config
-        self._stop_event = ThreadEvent()
-        self._runner = AlertCenterRunner(
+        runner = AlertCenterRunner(
             config=config,
             log_callback=self.process_log,
             status_callback=self.process_status,
             record_callback=self.process_record,
             state_callback=self.process_state,
         )
-        self._thread = Thread(target=self._run_loop, name="AlertCenterRunner", daemon=True)
-        self._thread.start()
+        runner.run_preview_once(reference_time)
 
     def stop_alerting(self) -> None:
         """停止后台提醒线程。"""
-        if not self.is_running():
-            self.process_status(RunnerStatusData(False, False, "未运行", ""))
+        with self._thread_lock:
+            thread = self._thread
+            stop_event = self._stop_event
+
+        if not thread or not thread.is_alive():
+            self._clear_worker(thread)
+            self.process_status(make_runner_status(False, False, "未运行"))
             return
 
-        if self._stop_event:
-            self._stop_event.set()
+        if stop_event:
+            stop_event.set()
 
-        if self._thread:
-            self._thread.join(timeout=5)
+        thread.join(timeout=5)
+        if thread.is_alive():
+            self.write_log("停止请求已发送，正在等待当前轮询结束。")
+            self.process_status(make_runner_status(True, False, "停止中，等待当前请求结束"))
+            return
 
-        self._thread = None
-        self._stop_event = None
-        self._runner = None
-        self.write_log("已请求停止提醒线程。")
+        self._clear_worker(thread)
+        self.write_log("提醒线程已停止。")
 
     def is_running(self) -> bool:
         """判断后台线程是否仍在运行。"""
-        return bool(self._thread and self._thread.is_alive())
+        with self._thread_lock:
+            return bool(self._thread and self._thread.is_alive())
 
     def get_recent_records(self, limit: int = 100) -> list[RecordData]:
         """读取最近触发记录，供 GUI 初始展示。"""
@@ -108,16 +145,15 @@ class AlertCenterEngine(BaseEngine):
         """主程序退出时安全关闭后台线程。"""
         self.stop_alerting()
 
-    def _run_loop(self) -> None:
+    def _run_loop(self, runner: AlertCenterRunner, stop_event: ThreadEvent) -> None:
         """后台线程入口。"""
-        if not self._runner or not self._stop_event:
-            return
-
         try:
-            self._runner.run_forever(self._stop_event)
+            runner.run_forever(stop_event)
         except Exception as exc:
             self.write_log(f"提醒线程异常退出：{exc}", source="Runner", level="ERROR")
-            self.process_status(RunnerStatusData(False, False, f"异常退出：{exc}", ""))
+            self.process_status(make_runner_status(False, False, f"异常退出：{exc}"))
+        finally:
+            self._clear_worker(current_thread())
 
     def process_log(self, data: LogData) -> None:
         """把日志事件发给 GUI。"""
@@ -143,3 +179,13 @@ class AlertCenterEngine(BaseEngine):
     def write_log(self, message: str, source: str = "Engine", level: str = "INFO") -> None:
         """对外提供简单日志接口。"""
         self.process_log(make_log(level, source, message))
+
+    def _clear_worker(self, thread: Thread | None = None) -> None:
+        """仅在句柄仍然匹配当前工作线程时清理后台状态。"""
+        with self._thread_lock:
+            if thread is not None and self._thread is not thread:
+                return
+
+            self._thread = None
+            self._stop_event = None
+            self._runner = None

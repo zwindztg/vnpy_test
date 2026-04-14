@@ -8,19 +8,25 @@
   "symbols": [
     {
       "vt_symbol": "601869.SSE",
-      "breakout_price": 6.8,
-      "stop_loss_price": 6.55,
-      "fast_ma_window": 3,
-      "slow_ma_window": 8,
+      "strategy_name": "BasicAlertStrategy",
+      "params": {
+        "breakout_price": 6.8,
+        "stop_loss_price": 6.55,
+        "fast_ma_window": 3,
+        "slow_ma_window": 8
+      },
       "enabled": true
     },
     {
       "vt_symbol": "600000.SSE",
-      "breakout_price": 12.6,
-      "stop_loss_price": 12.1,
-      "fast_ma_window": 3,
-      "slow_ma_window": 8,
-      "enabled": true
+      "strategy_name": "LessonVolumeBreakoutAShareStrategy",
+      "params": {
+        "breakout_window": 5,
+        "exit_window": 3,
+        "volume_window": 5,
+        "volume_ratio": 1.5
+      },
+      "enabled": false
     }
   ]
 }

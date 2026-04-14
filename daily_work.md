@@ -114,7 +114,7 @@
 
 ## 2026-04-14 22:58:35 +08:00
 
-- 提交号：`待本次提交生成`
+- 提交号：`469c08d`
 - 提交信息：`feat: 完善实时提醒中心与单次测试回放 / improve alert center strategy UI and preview fallback`
 - 详细说明：
   - 为 [vnpy_alertcenter/ui/widget.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/ui/widget.py) 增加按股票选择提醒策略的下拉框、动态参数区，以及“模拟时间 + 单次测试”入口，方便在非交易时段验证 GUI。

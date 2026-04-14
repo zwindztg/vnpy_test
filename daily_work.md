@@ -2,7 +2,7 @@
 
 ## 2026-04-14 18:22:33 +08:00
 
-- 提交号：`<待回填>`
+- 提交号：`722e920`
 - 提交信息：`refactor: 工程内隔离vntrader目录，停止写入用户根目录 / isolate vntrader in project and stop writing to home directory`
 - 详细说明：
   - 更新 [run_vnpy.py](/Users/zezhang/Documents/codex/vnpy/run_vnpy.py)，将 `TRADER_DIR` 固定为工程目录下 `.vntrader`，不再回落到 `~/.vntrader`。

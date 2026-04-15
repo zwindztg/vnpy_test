@@ -362,7 +362,8 @@ class AlertChartWidget(QtWidgets.QWidget):
             max_price += max_price * 0.01 if max_price else 1
             min_price -= min_price * 0.01 if min_price else 1
 
-        price_padding = (max_price - min_price) * 0.08
+        price_padding_ratio = 0.12 if markers else 0.08
+        price_padding = (max_price - min_price) * price_padding_ratio
         max_price += price_padding
         min_price -= price_padding
 
@@ -370,6 +371,8 @@ class AlertChartWidget(QtWidgets.QWidget):
 
         step_x = price_rect.width() / max(len(bars), 1)
         candle_width = max(4.0, min(step_x * 0.62, 18.0))
+        compact_marker = step_x < 16.0
+        marker_spacing = 18.0 if compact_marker else 24.0
         dt_to_index = {bar.dt: index for index, bar in enumerate(bars)}
 
         for index, bar in enumerate(bars):
@@ -407,8 +410,20 @@ class AlertChartWidget(QtWidgets.QWidget):
             x_center = price_rect.left() + step_x * (index + 0.5)
             for offset, marker in enumerate(marker_list):
                 base_y = self.price_to_y(marker.price, min_price, max_price, price_rect)
-                marker_y = base_y + (offset * 12 if marker.direction == "buy" else -offset * 12)
-                self.draw_marker(painter, x_center, marker_y, marker.direction)
+                direction_offset = marker_spacing * (offset + 1)
+                marker_y = (
+                    base_y + direction_offset
+                    if marker.direction == "buy"
+                    else base_y - direction_offset
+                )
+                self.draw_marker(
+                    painter,
+                    x_center,
+                    base_y,
+                    marker_y,
+                    marker.direction,
+                    compact=compact_marker,
+                )
 
         self.draw_time_axis(painter, time_rect, bars)
 
@@ -532,26 +547,57 @@ class AlertChartWidget(QtWidgets.QWidget):
             return bar.dt.strftime("%m-%d %H:%M")
         return bar.dt.strftime("%H:%M")
 
-    def draw_marker(self, painter: QtGui.QPainter, x_center: float, y_center: float, direction: str) -> None:
-        """绘制红绿三角标记，分别表示理论买点和卖点。"""
-        if direction == "buy":
-            color = QtGui.QColor("#22c55e")
-            points = [
-                QtCore.QPointF(x_center, y_center - 7),
-                QtCore.QPointF(x_center - 6, y_center + 5),
-                QtCore.QPointF(x_center + 6, y_center + 5),
-            ]
-        else:
-            color = QtGui.QColor("#ef4444")
-            points = [
-                QtCore.QPointF(x_center, y_center + 7),
-                QtCore.QPointF(x_center - 6, y_center - 5),
-                QtCore.QPointF(x_center + 6, y_center - 5),
-            ]
+    def draw_marker(
+        self,
+        painter: QtGui.QPainter,
+        x_center: float,
+        anchor_y: float,
+        label_center_y: float,
+        direction: str,
+        *,
+        compact: bool,
+    ) -> None:
+        """绘制圆角买卖标签，并用细引线指回实际触发价位。"""
+        is_buy = direction == "buy"
+        fill_color = QtGui.QColor("#16a34a" if is_buy else "#dc2626")
+        border_color = QtGui.QColor("#4ade80" if is_buy else "#f87171")
+        text_color = QtGui.QColor("#f8fafc")
+        line_color = QtGui.QColor(border_color)
+        label_text = ("B" if is_buy else "S") if compact else ("买" if is_buy else "卖")
 
-        painter.setPen(QtGui.QPen(color, 1))
-        painter.setBrush(color)
-        painter.drawPolygon(QtGui.QPolygonF(points))
+        font = painter.font()
+        font.setPointSize(8 if compact else 9)
+        font.setBold(True)
+        painter.setFont(font)
+        metrics = QtGui.QFontMetrics(font)
+        text_width = float(metrics.horizontalAdvance(label_text))
+        label_width = max(22.0 if compact else 28.0, text_width + (10.0 if compact else 14.0))
+        label_height = 16.0 if compact else 20.0
+        label_rect = QtCore.QRectF(
+            x_center - label_width / 2,
+            label_center_y - label_height / 2,
+            label_width,
+            label_height,
+        )
+
+        line_end_y = label_rect.top() if is_buy else label_rect.bottom()
+        line_start_y = anchor_y + 3 if is_buy else anchor_y - 3
+        painter.setPen(QtGui.QPen(line_color, 1))
+        painter.drawLine(
+            QtCore.QPointF(x_center, line_start_y),
+            QtCore.QPointF(x_center, line_end_y),
+        )
+
+        painter.setPen(QtGui.QPen(border_color, 1))
+        painter.setBrush(fill_color)
+        painter.drawRoundedRect(label_rect, 7, 7)
+
+        painter.setPen(text_color)
+        painter.drawText(
+            label_rect,
+            int(QtCore.Qt.AlignmentFlag.AlignCenter),
+            label_text,
+        )
 
     def price_to_y(self, price: float, min_price: float, max_price: float, rect: QtCore.QRectF) -> float:
         """把价格映射成图上的纵坐标。"""

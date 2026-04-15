@@ -265,46 +265,51 @@ class AlertCenterWidget(QtWidgets.QWidget):
         return group
 
     def create_main_splitter(self) -> QtWidgets.QSplitter:
-        """创建“左侧配置、右侧图表与策略”的主布局。"""
-        left_panel = QtWidgets.QWidget()
-        left_layout = QtWidgets.QVBoxLayout()
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(10)
-        left_layout.addWidget(self.create_global_group())
-        left_layout.addWidget(self.create_symbol_group())
-        left_layout.addWidget(self.create_runtime_group())
-        left_layout.addStretch(1)
-        left_panel.setLayout(left_layout)
+        """创建“左侧全部信息、右侧图表/日志”的双列主布局。"""
+        top_left_panel = QtWidgets.QWidget()
+        top_left_layout = QtWidgets.QVBoxLayout()
+        top_left_layout.setContentsMargins(0, 0, 0, 0)
+        top_left_layout.setSpacing(10)
+        top_left_layout.addWidget(self.create_global_group())
+        top_left_layout.addWidget(self.create_symbol_group())
+        top_left_layout.addWidget(self.create_runtime_group())
+        top_left_layout.addStretch(1)
+        top_left_panel.setLayout(top_left_layout)
 
-        left_scroll = QtWidgets.QScrollArea()
-        left_scroll.setWidgetResizable(True)
-        left_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        left_scroll.setWidget(left_panel)
-        left_scroll.setMinimumWidth(620)
+        top_left_scroll = QtWidgets.QScrollArea()
+        top_left_scroll.setWidgetResizable(True)
+        top_left_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        top_left_scroll.setWidget(top_left_panel)
 
-        right_panel = self.create_workspace_splitter()
-        right_panel.setMinimumWidth(820)
-
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        splitter.addWidget(left_scroll)
-        splitter.addWidget(right_panel)
-        splitter.setStretchFactor(0, 38)
-        splitter.setStretchFactor(1, 62)
-        splitter.setSizes([700, 1100])
-        return splitter
-
-    def create_workspace_splitter(self) -> QtWidgets.QSplitter:
-        """创建右侧“策略状态/记录 + 图表/日志”的工作区。"""
-        strategy_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
-        strategy_splitter.addWidget(
+        left_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        left_splitter.addWidget(top_left_scroll)
+        left_splitter.addWidget(
             self.create_panel_group("策略状态", self.create_state_table())
         )
-        strategy_splitter.addWidget(
+        left_splitter.addWidget(
             self.create_panel_group("提醒记录", self.create_record_table())
         )
-        strategy_splitter.setStretchFactor(0, 4)
-        strategy_splitter.setStretchFactor(1, 3)
-        strategy_splitter.setSizes([420, 300])
+        left_splitter.setStretchFactor(0, 7)
+        left_splitter.setStretchFactor(1, 4)
+        left_splitter.setStretchFactor(2, 4)
+        left_splitter.setSizes([560, 320, 320])
+        left_splitter.setMinimumWidth(420)
+
+        right_panel = self.create_chart_log_splitter()
+        right_panel.setMinimumWidth(360)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        splitter.addWidget(left_splitter)
+        splitter.addWidget(right_panel)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(12)
+        splitter.setStretchFactor(0, 58)
+        splitter.setStretchFactor(1, 42)
+        splitter.setSizes([1160, 860])
+        return splitter
+
+    def create_chart_log_splitter(self) -> QtWidgets.QSplitter:
+        """创建右侧仅包含“K线图 + 运行日志”的工作区。"""
 
         self.chart_widget = AlertChartWidget()
         self.expand_chart_button = QtWidgets.QPushButton("放大查看")
@@ -323,14 +328,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         chart_splitter.setStretchFactor(0, 7)
         chart_splitter.setStretchFactor(1, 3)
         chart_splitter.setSizes([540, 220])
-
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        splitter.addWidget(strategy_splitter)
-        splitter.addWidget(chart_splitter)
-        splitter.setStretchFactor(0, 42)
-        splitter.setStretchFactor(1, 58)
-        splitter.setSizes([620, 860])
-        return splitter
+        return chart_splitter
 
     def create_panel_group(
         self,

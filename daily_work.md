@@ -148,7 +148,7 @@
 
 ## 2026-04-15 09:57:04 +08:00
 
-- 提交号：`<pending>`
+- 提交号：`5f2c69f`
 - 提交信息：`fix: 修复本地日线缓存并补充数据对比工具 / repair local daily cache and add source comparison tools`
 - 详细说明：
   - 在 [vnpy_alertcenter/core.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/core.py) 中修复东财分钟线时间比较的时区类型问题，避免对比和预览阶段因为 naive/aware 时间混用而报假错。

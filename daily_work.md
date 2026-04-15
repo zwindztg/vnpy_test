@@ -155,3 +155,12 @@
   - 新增 [compare_alert_data_sources.py](/Users/zezhang/Documents/codex/vnpy/scripts/compare_alert_data_sources.py)，支持并排对比 `pytdx`、东财分钟线和本地 sqlite 的最后一根完整 K 线，并输出价格比例，方便快速定位口径问题。
   - 新增 [repair_local_bar_cache.py](/Users/zezhang/Documents/codex/vnpy/scripts/repair_local_bar_cache.py)，支持按股票和周期删除旧缓存并重新下载写回本地 sqlite，作为后续排查缓存污染的可复用工具。
   - 实际修复了 `601869.SSE-d` 的本地脏缓存，并验证修复后本地 `d`、`pytdx` 与东财分钟线在关键时间点的收盘价已经重新一致。
+
+## 2026-04-15 10:24:42 +08:00
+
+- 提交号：`e7be377`
+- 提交信息：`feat: 优化提醒模式展示并按开盘价生成默认阈值 / improve alert mode display and derive default thresholds from opening price`
+- 详细说明：
+  - 在 [vnpy_alertcenter/ui/widget.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/ui/widget.py) 中增加顶部“当前模式”标签，并为日志补充会话分隔线、模式徽标和颜色区分，让“单次测试”和“实时运行”在界面上更容易分辨。
+  - 为基础提醒策略增加按股票代码自动刷新默认阈值的逻辑，打开界面、重新加载配置、切换回基础提醒策略或修改股票代码后，都会重新计算默认突破价和止损价。
+  - 在 [vnpy_alertcenter/core.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/core.py) 中新增最近交易日开盘价读取链路，按 `pytdx -> 东财分钟线 -> 本地日线` 的顺序获取参考开盘价，并把基础提醒策略默认值设置为“开盘价上浮 2% / 下浮 2%”。

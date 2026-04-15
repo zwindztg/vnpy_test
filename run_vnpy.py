@@ -1026,34 +1026,59 @@ def patch_backtesting_setting_editor() -> None:
 
 
 def patch_main_window_behavior() -> None:
-    """改善 macOS 下功能窗口打开后不前置的问题。"""
+    """改善主窗口交互体验。"""
     from vnpy.trader.ui.mainwindow import MainWindow
-    from vnpy.trader.ui import QtWidgets
+    from vnpy.trader.ui import QtGui, QtWidgets
 
-    if getattr(MainWindow, "_vnpy_test_open_widget_patched", False):
-        return
+    if not getattr(MainWindow, "_vnpy_test_open_widget_patched", False):
+        def open_widget(self, widget_class: type[QtWidgets.QWidget], name: str) -> None:
+            """打开功能窗口，并尽量把窗口带到前台。"""
+            widget: QtWidgets.QWidget | None = self.widgets.get(name, None)
+            if not widget:
+                widget = widget_class(self.main_engine, self.event_engine)      # type: ignore
+                self.widgets[name] = widget
 
-    def open_widget(self, widget_class: type[QtWidgets.QWidget], name: str) -> None:
-        """打开功能窗口，并尽量把窗口带到前台。"""
-        widget: QtWidgets.QWidget | None = self.widgets.get(name, None)
-        if not widget:
-            widget = widget_class(self.main_engine, self.event_engine)      # type: ignore
-            self.widgets[name] = widget
+            if isinstance(widget, QtWidgets.QDialog):
+                widget.raise_()
+                widget.activateWindow()
+                widget.exec()
+            else:
+                # 在 macOS 下，单纯 show() 有时会创建窗口但不前置，
+                # 表现出来就像“菜单点了没反应”。这里显式恢复、前置并激活。
+                widget.showNormal()
+                widget.raise_()
+                widget.activateWindow()
+                widget.show()
 
-        if isinstance(widget, QtWidgets.QDialog):
-            widget.raise_()
-            widget.activateWindow()
-            widget.exec()
-        else:
-            # 在 macOS 下，单纯 show() 有时会创建窗口但不前置，
-            # 表现出来就像“菜单点了没反应”。这里显式恢复、前置并激活。
-            widget.showNormal()
-            widget.raise_()
-            widget.activateWindow()
-            widget.show()
+        MainWindow.open_widget = open_widget
+        MainWindow._vnpy_test_open_widget_patched = True
 
-    MainWindow.open_widget = open_widget
-    MainWindow._vnpy_test_open_widget_patched = True
+    if not getattr(MainWindow, "_vnpy_test_close_event_patched", False):
+        def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+            """让回车默认选中确认退出，减少关闭时的额外操作。"""
+            reply = QtWidgets.QMessageBox.question(
+                self,
+                "退出",
+                "确认退出？",
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.Yes,
+            )
+
+            if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+                for widget in self.widgets.values():
+                    widget.close()
+
+                for monitor in self.monitors.values():
+                    monitor.save_setting()
+
+                self.save_window_setting("custom")
+                self.main_engine.close()
+                event.accept()
+            else:
+                event.ignore()
+
+        MainWindow.closeEvent = closeEvent
+        MainWindow._vnpy_test_close_event_patched = True
 
 
 def sync_local_strategies() -> None:

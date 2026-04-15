@@ -1276,6 +1276,8 @@ def fetch_eastmoney_minute_dataframe(
     end_dt: datetime,
 ) -> pd.DataFrame:
     """直接请求东财分钟线接口，并补齐更像浏览器的请求头。"""
+    local_start = ensure_china_tz(start_dt).replace(tzinfo=None)
+    local_end = ensure_china_tz(end_dt).replace(tzinfo=None)
     market_code = 1 if symbol.startswith("6") else 0
     session = requests.Session()
     session.trust_env = False
@@ -1310,7 +1312,7 @@ def fetch_eastmoney_minute_dataframe(
             "均价",
         ]
         df["时间"] = pd.to_datetime(df["时间"])
-        df = df[(df["时间"] >= start_dt) & (df["时间"] <= end_dt)].copy()
+        df = df[(df["时间"] >= local_start) & (df["时间"] <= local_end)].copy()
         df["时间"] = df["时间"].astype(str)
         for column in ("开盘", "收盘", "最高", "最低", "成交量", "成交额", "均价"):
             df[column] = pd.to_numeric(df[column], errors="coerce")
@@ -1350,7 +1352,7 @@ def fetch_eastmoney_minute_dataframe(
         "换手率",
     ]
     df["时间"] = pd.to_datetime(df["时间"])
-    df = df[(df["时间"] >= start_dt) & (df["时间"] <= end_dt)].copy()
+    df = df[(df["时间"] >= local_start) & (df["时间"] <= local_end)].copy()
     df["时间"] = df["时间"].astype(str)
     for column in ("开盘", "收盘", "最高", "最低", "成交量", "成交额", "振幅", "涨跌幅", "涨跌额", "换手率"):
         df[column] = pd.to_numeric(df[column], errors="coerce")

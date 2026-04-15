@@ -145,3 +145,13 @@
   - 修复 `pytdx` 预览路径里的时间类型比较问题，让单次测试可以直接走 `pytdx` 分钟线，不再一开始就回退到本地 `d` 数据。
   - 为状态快照新增 `data_source` 字段，并在 [vnpy_alertcenter/ui/widget.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/ui/widget.py) 的状态表中增加“数据源”列，方便直接看到当前使用的是 `pytdx`、东财分钟线还是本地 fallback。
   - 把默认模拟时间从“昨天 09:30”调整为“最近一个交易日 09:30”，避免周末打开 GUI 时默认落到非交易日。
+
+## 2026-04-15 09:57:04 +08:00
+
+- 提交号：`<pending>`
+- 提交信息：`fix: 修复本地日线缓存并补充数据对比工具 / repair local daily cache and add source comparison tools`
+- 详细说明：
+  - 在 [vnpy_alertcenter/core.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/core.py) 中修复东财分钟线时间比较的时区类型问题，避免对比和预览阶段因为 naive/aware 时间混用而报假错。
+  - 新增 [compare_alert_data_sources.py](/Users/zezhang/Documents/codex/vnpy/scripts/compare_alert_data_sources.py)，支持并排对比 `pytdx`、东财分钟线和本地 sqlite 的最后一根完整 K 线，并输出价格比例，方便快速定位口径问题。
+  - 新增 [repair_local_bar_cache.py](/Users/zezhang/Documents/codex/vnpy/scripts/repair_local_bar_cache.py)，支持按股票和周期删除旧缓存并重新下载写回本地 sqlite，作为后续排查缓存污染的可复用工具。
+  - 实际修复了 `601869.SSE-d` 的本地脏缓存，并验证修复后本地 `d`、`pytdx` 与东财分钟线在关键时间点的收盘价已经重新一致。

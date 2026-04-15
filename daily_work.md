@@ -135,3 +135,13 @@
   - 把当前已验证可连通的 `pytdx` 主站缓存策略再收紧，避免首次探测时遍历过多节点导致等待偏长。
   - 在 GUI 状态区补充“当前数据源”提示，明确区分 `pytdx`、东财分钟线和本地 fallback。
   - 后续考虑把 `pytdx` 分钟线写回本地 `sqlite`，让非交易时段的分钟级回放更稳定。
+
+## 2026-04-15 09:00:14 +08:00
+
+- 提交号：`c143456`
+- 提交信息：`feat: 优化 pytdx 预览链路与数据源展示 / improve pytdx preview flow and source visibility`
+- 详细说明：
+  - 收紧 [vnpy_alertcenter/core.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/core.py) 中的 `pytdx` 主站探测顺序，改为“已验证节点 + 默认节点 + 少量备选 + 小规模内置兜底”，减少首次探测等待时间。
+  - 修复 `pytdx` 预览路径里的时间类型比较问题，让单次测试可以直接走 `pytdx` 分钟线，不再一开始就回退到本地 `d` 数据。
+  - 为状态快照新增 `data_source` 字段，并在 [vnpy_alertcenter/ui/widget.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/ui/widget.py) 的状态表中增加“数据源”列，方便直接看到当前使用的是 `pytdx`、东财分钟线还是本地 fallback。
+  - 把默认模拟时间从“昨天 09:30”调整为“最近一个交易日 09:30”，避免周末打开 GUI 时默认落到非交易日。

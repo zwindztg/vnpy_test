@@ -194,3 +194,12 @@
   - 重构 [vnpy_alertcenter/ui/chart_widget.py](/Users/zezhang/Documents/codex/vnpy_test/vnpy_alertcenter/ui/chart_widget.py) 的绘制与交互：补上横轴时间刻度、放大查看弹窗、按钮与滚轮缩放、鼠标抓取拖动平移，以及弹窗下的 `Command+W` 关闭支持。
   - 调整 [vnpy_alertcenter/ui/widget.py](/Users/zezhang/Documents/codex/vnpy_test/vnpy_alertcenter/ui/widget.py) 的提醒中心布局，把全局设置/股票配置/运行信息放到左侧，右侧改为“策略状态/提醒记录 + K 线图/日志”，并在 K 线图面板上增加“放大查看”入口。
   - 新增 [tests/test_alertcenter_chart_markers.py](/Users/zezhang/Documents/codex/vnpy_test/tests/test_alertcenter_chart_markers.py) 和 [tests/test_alertcenter_chart_view.py](/Users/zezhang/Documents/codex/vnpy_test/tests/test_alertcenter_chart_view.py)，分别覆盖理论买卖点生成和日内缩放/平移视图逻辑。
+
+## 2026-04-15 16:17:30 +08:00
+
+- 提交号：`022eab3`
+- 提交信息：`feat: 优化提醒中心布局与图表标记样式 / polish alert center layout and chart markers`
+- 详细说明：
+  - 调整 [vnpy_alertcenter/ui/widget.py](/Users/zezhang/Documents/codex/vnpy_test/vnpy_alertcenter/ui/widget.py) 的主布局，改成“左侧配置/状态/记录，右侧 K 线图/运行日志”的双列结构，并放宽左右区域的最小宽度约束，让中间分隔条可以正常左右拖动。
+  - 优化 [vnpy_alertcenter/ui/chart_widget.py](/Users/zezhang/Documents/codex/vnpy_test/vnpy_alertcenter/ui/chart_widget.py) 中的买卖点绘制方式，把原来的三角形标记替换为“圆角标签 + 细引线”，默认显示 `买/卖`，图面较密时自动简化为 `B/S`，提升整体观感和可读性。
+  - 补强放大查看弹窗下的关闭和交互细节，确保图表样式调整后仍能和现有缩放、拖动浏览体验一起正常工作。

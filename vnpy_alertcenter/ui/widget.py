@@ -509,13 +509,60 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.metric_value_labels[key] = value_label
         return card
 
+    def create_setting_field(self, title: str, widget: QtWidgets.QWidget) -> QtWidgets.QWidget:
+        """创建紧凑的设置项块，方便全局设置横向排布。"""
+        container = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        title_label = QtWidgets.QLabel(title)
+        title_label.setProperty("textRole", "metricTitle")
+        layout.addWidget(title_label)
+        layout.addWidget(widget)
+        container.setLayout(layout)
+        return container
+
+    def create_symbol_row_field(
+        self,
+        widget: QtWidgets.QWidget,
+        *,
+        center_widget: bool = False,
+    ) -> QtWidgets.QWidget:
+        """给股票配置行补齐统一的顶部占位，保证各列输入框上下对平。"""
+        container = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        placeholder = QtWidgets.QLabel(" ")
+        placeholder.setFixedHeight(22)
+        placeholder.setStyleSheet("color: transparent;")
+        layout.addWidget(placeholder)
+
+        if center_widget:
+            row_layout = QtWidgets.QHBoxLayout()
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.addStretch(1)
+            row_layout.addWidget(widget)
+            row_layout.addStretch(1)
+            layout.addLayout(row_layout)
+        else:
+            layout.addWidget(widget)
+
+        container.setLayout(layout)
+        return container
+
     def create_global_group(self) -> QtWidgets.QWidget:
         """创建全局参数卡片。"""
         body = QtWidgets.QWidget()
-        form = QtWidgets.QFormLayout()
-        form.setContentsMargins(0, 0, 0, 0)
-        form.setSpacing(12)
-        form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        grid = QtWidgets.QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(12)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(2, 1)
 
         self.interval_combo = QtWidgets.QComboBox()
         for interval in SUPPORTED_INTERVALS:
@@ -534,20 +581,21 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.adjust_combo.addItem("后复权", "hfq")
         self.adjust_combo.addItem("不复权", "")
 
-        self.notification_checkbox = QtWidgets.QCheckBox("启用桌面通知")
+        self.notification_checkbox = QtWidgets.QCheckBox("启用")
         self.preview_time_edit = QtWidgets.QDateTimeEdit()
         self.preview_time_edit.setCalendarPopup(True)
         self.preview_time_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
         self.preview_time_edit.setDateTime(self.build_default_preview_qdatetime())
+        self.preview_time_edit.setMinimumWidth(210)
 
-        form.addRow("提醒周期", self.interval_combo)
-        form.addRow("轮询间隔", self.poll_spin)
-        form.addRow("冷却时间", self.cooldown_spin)
-        form.addRow("复权方式", self.adjust_combo)
-        form.addRow("", self.notification_checkbox)
-        form.addRow("模拟时间", self.preview_time_edit)
+        grid.addWidget(self.create_setting_field("提醒周期", self.interval_combo), 0, 0)
+        grid.addWidget(self.create_setting_field("轮询间隔", self.poll_spin), 0, 1)
+        grid.addWidget(self.create_setting_field("冷却时间", self.cooldown_spin), 0, 2)
+        grid.addWidget(self.create_setting_field("复权方式", self.adjust_combo), 1, 0)
+        grid.addWidget(self.create_setting_field("桌面通知", self.notification_checkbox), 1, 1)
+        grid.addWidget(self.create_setting_field("模拟时间", self.preview_time_edit), 1, 2)
 
-        body.setLayout(form)
+        body.setLayout(grid)
         return self.create_card_panel("全局设置", "Global configuration", body)
 
     def create_symbol_group(self) -> QtWidgets.QWidget:
@@ -557,6 +605,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(10)
+        grid.setColumnStretch(1, 2)
         grid.setColumnStretch(2, 1)
 
         headers = ("启用", "股票代码", "提醒策略", "参数1", "参数2", "参数3", "参数4")
@@ -580,9 +629,9 @@ class AlertCenterWidget(QtWidgets.QWidget):
             row_widgets.vt_symbol.setPlaceholderText("例如 601869.SSE")
             self.row_widgets.append(row_widgets)
 
-            grid.addWidget(row_widgets.enabled, row + 1, 0)
-            grid.addWidget(row_widgets.vt_symbol, row + 1, 1)
-            grid.addWidget(row_widgets.strategy_combo, row + 1, 2)
+            grid.addWidget(self.create_symbol_row_field(row_widgets.enabled, center_widget=True), row + 1, 0)
+            grid.addWidget(self.create_symbol_row_field(row_widgets.vt_symbol), row + 1, 1)
+            grid.addWidget(self.create_symbol_row_field(row_widgets.strategy_combo), row + 1, 2)
 
             for column in range(4):
                 param_input = self.create_param_input()
@@ -605,9 +654,13 @@ class AlertCenterWidget(QtWidgets.QWidget):
     def create_runtime_group(self) -> QtWidgets.QWidget:
         """创建运行信息卡片。"""
         body = QtWidgets.QWidget()
-        form = QtWidgets.QFormLayout()
-        form.setContentsMargins(0, 0, 0, 0)
-        form.setSpacing(12)
+        grid = QtWidgets.QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(12)
+        grid.setColumnStretch(0, 2)
+        grid.setColumnStretch(1, 2)
+        grid.setColumnStretch(2, 1)
 
         self.config_path_label = QtWidgets.QLabel("")
         self.history_path_label = QtWidgets.QLabel("")
@@ -617,11 +670,13 @@ class AlertCenterWidget(QtWidgets.QWidget):
         for label in (self.config_path_label, self.history_path_label):
             label.setWordWrap(True)
             label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+            label.setProperty("textRole", "cardSubtitle")
 
-        form.addRow("配置文件", self.config_path_label)
-        form.addRow("记录文件", self.history_path_label)
-        form.addRow("线程状态", self.thread_label)
-        body.setLayout(form)
+        grid.addWidget(self.create_setting_field("配置文件", self.config_path_label), 0, 0)
+        grid.addWidget(self.create_setting_field("记录文件", self.history_path_label), 0, 1)
+        grid.addWidget(self.create_setting_field("线程状态", self.thread_label), 0, 2)
+
+        body.setLayout(grid)
         return self.create_card_panel("运行信息", "Runtime information", body)
 
     def create_main_splitter(self) -> QtWidgets.QSplitter:
@@ -637,9 +692,6 @@ class AlertCenterWidget(QtWidgets.QWidget):
         left_layout.addWidget(self.create_runtime_group())
         left_layout.addWidget(
             self.create_card_panel("策略状态", "State board", self.create_state_table())
-        )
-        left_layout.addWidget(
-            self.create_card_panel("提醒记录", "Recent alerts", self.create_record_table())
         )
         left_layout.addStretch(1)
         left_panel.setLayout(left_layout)
@@ -665,7 +717,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         return splitter
 
     def create_chart_log_splitter(self) -> QtWidgets.QSplitter:
-        """创建右侧仅包含“K线图 + 运行日志”的工作区。"""
+        """创建右侧仅包含“K线图 + 运行日志 + 提醒记录”的工作区。"""
 
         self.chart_widget = AlertChartWidget()
         self.expand_chart_button = QtWidgets.QPushButton("放大查看")
@@ -674,7 +726,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.expand_chart_button.clicked.connect(self.open_chart_popup)
         chart_group = self.create_card_panel(
             "K 线图",
-            "Theoretical markers and time axis",
+            "",
             self.chart_widget,
             toolbar_widget=self.expand_chart_button,
         )
@@ -690,13 +742,21 @@ class AlertCenterWidget(QtWidgets.QWidget):
             self.log_edit,
         )
 
+        record_group = self.create_card_panel(
+            "提醒记录",
+            "Recent alerts",
+            self.create_record_table(),
+        )
+
         chart_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
         chart_splitter.addWidget(chart_group)
         chart_splitter.addWidget(log_group)
+        chart_splitter.addWidget(record_group)
         chart_splitter.setChildrenCollapsible(False)
-        chart_splitter.setStretchFactor(0, 7)
+        chart_splitter.setStretchFactor(0, 6)
         chart_splitter.setStretchFactor(1, 3)
-        chart_splitter.setSizes([540, 220])
+        chart_splitter.setStretchFactor(2, 4)
+        chart_splitter.setSizes([470, 210, 270])
         return chart_splitter
 
     def create_card_panel(
@@ -728,7 +788,8 @@ class AlertCenterWidget(QtWidgets.QWidget):
         subtitle_label.setProperty("textRole", "cardSubtitle")
         subtitle_label.setWordWrap(True)
         header_text_layout.addWidget(title_label)
-        header_text_layout.addWidget(subtitle_label)
+        if subtitle.strip():
+            header_text_layout.addWidget(subtitle_label)
 
         header_layout.addLayout(header_text_layout)
         header_layout.addStretch(1)
@@ -766,7 +827,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.record_table.verticalHeader().setVisible(False)
         self.record_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.record_table.setAlternatingRowColors(True)
-        self.record_table.setMinimumHeight(280)
+        self.record_table.setMinimumHeight(220)
         self.record_table.verticalHeader().setDefaultSectionSize(38)
         self.record_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.record_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
@@ -784,7 +845,9 @@ class AlertCenterWidget(QtWidgets.QWidget):
         layout.setSpacing(4)
 
         label = QtWidgets.QLabel("未使用")
+        label.setFixedHeight(22)
         label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        label.setProperty("textRole", "metricTitle")
 
         editor = QtWidgets.QDoubleSpinBox()
         editor.setRange(0.0, 100000.0)

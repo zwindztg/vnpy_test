@@ -64,6 +64,57 @@ class SymbolRowWidgets:
     cached_params: dict[str, dict[str, float | int]] = field(default_factory=dict)
 
 
+class ThinSplitterHandle(QtWidgets.QSplitterHandle):
+    """自绘分隔条，只显示一根细线，但保留足够拖动热区。"""
+
+    def __init__(self, orientation: QtCore.Qt.Orientation, parent: QtWidgets.QSplitter) -> None:
+        super().__init__(orientation, parent)
+        cursor = (
+            QtCore.Qt.CursorShape.SplitHCursor
+            if orientation == QtCore.Qt.Orientation.Horizontal
+            else QtCore.Qt.CursorShape.SplitVCursor
+        )
+        self.setCursor(cursor)
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:      # noqa: N802
+        """只画中间细线，避免 macOS 原生分隔条显示成整块粗带。"""
+        _event = event
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QtGui.QColor(0, 0, 0, 0))
+        painter.setPen(QtGui.QPen(QtGui.QColor("#4d667d"), 1))
+
+        if self.orientation() == QtCore.Qt.Orientation.Horizontal:
+            x = self.rect().center().x() + 0.5
+            margin = 16.0
+            painter.drawLine(
+                QtCore.QPointF(x, margin),
+                QtCore.QPointF(x, max(margin, self.height() - margin)),
+            )
+        else:
+            y = self.rect().center().y() + 0.5
+            margin = 28.0
+            painter.drawLine(
+                QtCore.QPointF(margin, y),
+                QtCore.QPointF(max(margin, self.width() - margin), y),
+            )
+
+
+class ThinSplitter(QtWidgets.QSplitter):
+    """统一使用细线分隔条，避免原生 splitter 视觉过粗。"""
+
+    def __init__(self, orientation: QtCore.Qt.Orientation, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(orientation, parent)
+        self.setChildrenCollapsible(False)
+        # 热区保留略宽一点，方便拖动；真正看到的线由 handle 自己绘制。
+        self.setHandleWidth(10)
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def createHandle(self) -> QtWidgets.QSplitterHandle:
+        """返回自绘 handle，控制分隔条的真实视觉效果。"""
+        return ThinSplitterHandle(self.orientation(), self)
+
+
 class AlertCenterWidget(QtWidgets.QWidget):
     """用于在 vn.py 内部操作实时提醒的主窗口。"""
 
@@ -149,6 +200,9 @@ class AlertCenterWidget(QtWidgets.QWidget):
                 background-color: #081321;
                 color: #e5edf7;
             }
+            #alertCenterWidget QSplitter {
+                background: transparent;
+            }
             #alertCenterWidget QFrame[cardRole="hero"],
             #alertCenterWidget QFrame[cardRole="panel"],
             #alertCenterWidget QFrame[cardRole="metric"],
@@ -171,11 +225,11 @@ class AlertCenterWidget(QtWidgets.QWidget):
             #alertCenterWidget QLabel[textRole="heroSubtitle"],
             #alertCenterWidget QLabel[textRole="cardSubtitle"] {
                 color: #8ea2b8;
-                font-size: 12px;
+                font-size: 11px;
             }
             #alertCenterWidget QLabel[textRole="cardTitle"] {
                 color: #e5edf7;
-                font-size: 18px;
+                font-size: 16px;
                 font-weight: 700;
             }
             #alertCenterWidget QLabel[textRole="metricTitle"],
@@ -331,12 +385,12 @@ class AlertCenterWidget(QtWidgets.QWidget):
             }
             #alertCenterWidget QScrollBar:vertical,
             #alertCenterWidget QScrollBar:horizontal {
-                background: #0c1520;
-                border-radius: 6px;
-                margin: 4px;
+                background: transparent;
+                border-radius: 4px;
+                margin: 2px;
             }
             #alertCenterWidget QScrollBar:vertical {
-                width: 12px;
+                width: 7px;
             }
             #alertCenterWidget QScrollBar:horizontal {
                 height: 12px;
@@ -344,7 +398,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
             #alertCenterWidget QScrollBar::handle:vertical,
             #alertCenterWidget QScrollBar::handle:horizontal {
                 background: #47637d;
-                border-radius: 6px;
+                border-radius: 4px;
                 min-height: 28px;
                 min-width: 28px;
             }
@@ -354,17 +408,6 @@ class AlertCenterWidget(QtWidgets.QWidget):
             #alertCenterWidget QScrollBar::sub-page {
                 background: transparent;
                 border: none;
-            }
-            #alertCenterWidget QSplitter::handle {
-                background-color: #243648;
-                border-radius: 5px;
-                margin: 2px;
-            }
-            #alertCenterWidget QSplitter::handle:horizontal {
-                width: 12px;
-            }
-            #alertCenterWidget QSplitter::handle:vertical {
-                height: 12px;
             }
             """
         )
@@ -376,6 +419,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.test_button = QtWidgets.QPushButton("单次测试")
         self.start_button = QtWidgets.QPushButton("启动提醒")
         self.stop_button = QtWidgets.QPushButton("停止提醒")
+        self.expand_chart_button = QtWidgets.QPushButton("放大查看")
         self.mode_label = QtWidgets.QLabel("空闲")
         self.mode_label.setMinimumWidth(180)
         self.status_label = QtWidgets.QLabel("未启动")
@@ -387,6 +431,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
             (self.test_button, "primary"),
             (self.start_button, "success"),
             (self.stop_button, "ghost"),
+            (self.expand_chart_button, "ghost"),
         ):
             button.setProperty("buttonTone", tone)
             button.setMinimumHeight(38)
@@ -402,6 +447,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.test_button.clicked.connect(self.run_preview_once)
         self.start_button.clicked.connect(self.start_alerting)
         self.stop_button.clicked.connect(self.stop_alerting)
+        self.expand_chart_button.clicked.connect(self.open_chart_popup)
 
         card = QtWidgets.QFrame()
         card.setProperty("cardRole", "hero")
@@ -427,6 +473,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         button_row.addWidget(self.test_button)
         button_row.addWidget(self.start_button)
         button_row.addWidget(self.stop_button)
+        button_row.addWidget(self.expand_chart_button)
 
         status_row = QtWidgets.QHBoxLayout()
         status_row.setContentsMargins(0, 0, 0, 0)
@@ -701,16 +748,15 @@ class AlertCenterWidget(QtWidgets.QWidget):
         left_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         left_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         left_scroll.setWidget(left_panel)
-        left_scroll.setMinimumWidth(560)
+        # 放宽左右最小宽度，避免分隔条看得到却几乎拖不动。
+        left_scroll.setMinimumWidth(440)
 
         right_panel = self.create_chart_log_splitter()
-        right_panel.setMinimumWidth(440)
+        right_panel.setMinimumWidth(320)
 
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        splitter = ThinSplitter(QtCore.Qt.Orientation.Horizontal)
         splitter.addWidget(left_scroll)
         splitter.addWidget(right_panel)
-        splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(12)
         splitter.setStretchFactor(0, 57)
         splitter.setStretchFactor(1, 43)
         splitter.setSizes([960, 760])
@@ -720,20 +766,15 @@ class AlertCenterWidget(QtWidgets.QWidget):
         """创建右侧仅包含“K线图 + 运行日志 + 提醒记录”的工作区。"""
 
         self.chart_widget = AlertChartWidget()
-        self.expand_chart_button = QtWidgets.QPushButton("放大查看")
-        self.expand_chart_button.setProperty("buttonTone", "ghost")
-        self.expand_chart_button.setMinimumHeight(34)
-        self.expand_chart_button.clicked.connect(self.open_chart_popup)
-        chart_group = self.create_card_panel(
-            "K 线图",
-            "",
-            self.chart_widget,
-            toolbar_widget=self.expand_chart_button,
+        chart_group = self.create_content_panel(self.chart_widget)
+        chart_group.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding,
         )
 
         self.log_edit = QtWidgets.QTextEdit()
         self.log_edit.setReadOnly(True)
-        self.log_edit.setMinimumHeight(180)
+        self.log_edit.setMinimumHeight(100)
         self.log_edit.document().setMaximumBlockCount(800)
         self.log_edit.document().setDocumentMargin(8)
         log_group = self.create_card_panel(
@@ -748,16 +789,29 @@ class AlertCenterWidget(QtWidgets.QWidget):
             self.create_record_table(),
         )
 
-        chart_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        chart_splitter = ThinSplitter(QtCore.Qt.Orientation.Vertical)
         chart_splitter.addWidget(chart_group)
         chart_splitter.addWidget(log_group)
         chart_splitter.addWidget(record_group)
-        chart_splitter.setChildrenCollapsible(False)
-        chart_splitter.setStretchFactor(0, 6)
-        chart_splitter.setStretchFactor(1, 3)
-        chart_splitter.setStretchFactor(2, 4)
-        chart_splitter.setSizes([470, 210, 270])
+        # 右侧三块默认按 1.5 : 1 : 1 打开，后续高度完全交给 splitter 拖动调整。
+        chart_splitter.setStretchFactor(0, 3)
+        chart_splitter.setStretchFactor(1, 2)
+        chart_splitter.setStretchFactor(2, 2)
+        chart_splitter.setSizes([300, 200, 200])
         return chart_splitter
+
+    def create_content_panel(self, widget: QtWidgets.QWidget) -> QtWidgets.QWidget:
+        """创建只承载内容的卡片，不显示标题头部。"""
+        card = QtWidgets.QFrame()
+        card.setProperty("cardRole", "panel")
+        card.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
+
+        layout = QtWidgets.QVBoxLayout()
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(0)
+        layout.addWidget(widget)
+        card.setLayout(layout)
+        return card
 
     def create_card_panel(
         self,
@@ -772,29 +826,29 @@ class AlertCenterWidget(QtWidgets.QWidget):
         card.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
 
         layout = QtWidgets.QVBoxLayout()
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
+        layout.setContentsMargins(18, 14, 18, 18)
+        layout.setSpacing(8)
 
         header_layout = QtWidgets.QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(12)
 
-        header_text_layout = QtWidgets.QVBoxLayout()
-        header_text_layout.setContentsMargins(0, 0, 0, 0)
-        header_text_layout.setSpacing(2)
-        title_label = QtWidgets.QLabel(title)
-        title_label.setProperty("textRole", "cardTitle")
-        subtitle_label = QtWidgets.QLabel(subtitle)
-        subtitle_label.setProperty("textRole", "cardSubtitle")
-        subtitle_label.setWordWrap(True)
-        header_text_layout.addWidget(title_label)
+        header_label = QtWidgets.QLabel()
+        header_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        header_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.NoTextInteraction)
         if subtitle.strip():
-            header_text_layout.addWidget(subtitle_label)
+            header_label.setText(
+                f'<span style="color:#e5edf7; font-size:16px; font-weight:700;">{html.escape(title)}</span>'
+                f'<span style="color:#8ea2b8; font-size:11px; margin-left:8px;"> {html.escape(subtitle)}</span>'
+            )
+        else:
+            header_label.setText(
+                f'<span style="color:#e5edf7; font-size:16px; font-weight:700;">{html.escape(title)}</span>'
+            )
 
-        header_layout.addLayout(header_text_layout)
-        header_layout.addStretch(1)
+        header_layout.addWidget(header_label, 1)
         if toolbar_widget is not None:
-            header_layout.addWidget(toolbar_widget, alignment=QtCore.Qt.AlignmentFlag.AlignTop)
+            header_layout.addWidget(toolbar_widget, alignment=QtCore.Qt.AlignmentFlag.AlignVCenter)
 
         layout.addLayout(header_layout)
         layout.addWidget(widget)
@@ -809,7 +863,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.state_table.verticalHeader().setVisible(False)
         self.state_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.state_table.setAlternatingRowColors(True)
-        self.state_table.setMinimumHeight(230)
+        self.state_table.setMinimumHeight(170)
         self.state_table.verticalHeader().setDefaultSectionSize(38)
         self.state_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.state_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
@@ -827,7 +881,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.record_table.verticalHeader().setVisible(False)
         self.record_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.record_table.setAlternatingRowColors(True)
-        self.record_table.setMinimumHeight(220)
+        self.record_table.setMinimumHeight(140)
         self.record_table.verticalHeader().setDefaultSectionSize(38)
         self.record_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.record_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)

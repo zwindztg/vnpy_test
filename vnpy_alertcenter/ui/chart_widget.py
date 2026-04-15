@@ -52,10 +52,18 @@ class AlertChartWidget(QtWidgets.QWidget):
         self.dragging: bool = False
         self.drag_origin_x: float = 0.0
         self.drag_origin_start: int = 0
-        self.setMinimumHeight(340)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
         if self.interactive:
+            # 放大弹窗保持大画布，避免被主界面的紧凑尺寸限制误伤。
+            self.setMinimumHeight(420)
             self.setMouseTracking(True)
             self.setCursor(QtCore.Qt.CursorShape.OpenHandCursor)
+        else:
+            # 主界面里的嵌入图表只保留最小高度保护，高度交给 splitter 自己分配。
+            self.setMinimumHeight(120)
 
     def clear_snapshot(self, message: str | None = None) -> None:
         """清空当前图表快照，并显示占位提示。"""

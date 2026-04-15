@@ -39,7 +39,7 @@ from ..engine import (
     EVENT_ALERTCENTER_STATUS,
     AlertCenterEngine,
 )
-from .chart_widget import AlertChartWidget
+from .chart_widget import AlertChartPopupWindow, AlertChartWidget
 
 
 @dataclass
@@ -106,6 +106,8 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.state_rows: dict[str, int] = {}
         self.current_config: AppConfig = self.alert_engine.load_config()
         self.current_log_mode: str = "neutral"
+        self.latest_chart_snapshot: ChartSnapshotData | None = None
+        self.chart_popup: AlertChartPopupWindow | None = None
 
         self.init_ui()
         self.register_event()
@@ -113,6 +115,8 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.load_recent_records()
         self.populate_state_placeholders(self.current_config)
         self.refresh_runtime_info()
+        # 启动时先写一条界面日志，方便确认日志区已经恢复显示。
+        self.append_log("INFO", "UI", "日志窗口已就绪，单次测试或启动提醒后会在这里显示运行过程。")
 
     def init_ui(self) -> None:
         """初始化整个窗口布局。"""
@@ -125,10 +129,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
 
         layout = QtWidgets.QVBoxLayout()
         layout.addLayout(self.create_control_bar())
-        layout.addWidget(self.create_global_group())
-        layout.addWidget(self.create_symbol_group())
-        layout.addWidget(self.create_runtime_group())
-        layout.addWidget(self.create_bottom_splitter(), stretch=1)
+        layout.addWidget(self.create_main_splitter(), stretch=1)
         self.setLayout(layout)
 
     def create_control_bar(self) -> QtWidgets.QHBoxLayout:
@@ -263,31 +264,93 @@ class AlertCenterWidget(QtWidgets.QWidget):
         group.setLayout(form)
         return group
 
-    def create_bottom_splitter(self) -> QtWidgets.QSplitter:
-        """创建左侧表格、右侧图表和日志的主视图。"""
-        left_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
-        left_splitter.addWidget(self.create_state_table())
-        left_splitter.addWidget(self.create_record_table())
-        left_splitter.setStretchFactor(0, 1)
-        left_splitter.setStretchFactor(1, 1)
+    def create_main_splitter(self) -> QtWidgets.QSplitter:
+        """创建“左侧配置、右侧图表与策略”的主布局。"""
+        left_panel = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout()
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+        left_layout.addWidget(self.create_global_group())
+        left_layout.addWidget(self.create_symbol_group())
+        left_layout.addWidget(self.create_runtime_group())
+        left_layout.addStretch(1)
+        left_panel.setLayout(left_layout)
+
+        left_scroll = QtWidgets.QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        left_scroll.setWidget(left_panel)
+        left_scroll.setMinimumWidth(620)
+
+        right_panel = self.create_workspace_splitter()
+        right_panel.setMinimumWidth(820)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        splitter.addWidget(left_scroll)
+        splitter.addWidget(right_panel)
+        splitter.setStretchFactor(0, 38)
+        splitter.setStretchFactor(1, 62)
+        splitter.setSizes([700, 1100])
+        return splitter
+
+    def create_workspace_splitter(self) -> QtWidgets.QSplitter:
+        """创建右侧“策略状态/记录 + 图表/日志”的工作区。"""
+        strategy_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        strategy_splitter.addWidget(
+            self.create_panel_group("策略状态", self.create_state_table())
+        )
+        strategy_splitter.addWidget(
+            self.create_panel_group("提醒记录", self.create_record_table())
+        )
+        strategy_splitter.setStretchFactor(0, 4)
+        strategy_splitter.setStretchFactor(1, 3)
+        strategy_splitter.setSizes([420, 300])
 
         self.chart_widget = AlertChartWidget()
+        self.expand_chart_button = QtWidgets.QPushButton("放大查看")
+        self.expand_chart_button.clicked.connect(self.open_chart_popup)
+        chart_group = self.create_panel_group("K 线图", self.chart_widget, toolbar_widget=self.expand_chart_button)
 
         self.log_edit = QtWidgets.QTextEdit()
         self.log_edit.setReadOnly(True)
+        self.log_edit.setMinimumHeight(180)
+        self.log_edit.document().setMaximumBlockCount(800)
+        log_group = self.create_panel_group("运行日志", self.log_edit)
 
-        right_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
-        right_splitter.addWidget(self.chart_widget)
-        right_splitter.addWidget(self.log_edit)
-        right_splitter.setStretchFactor(0, 7)
-        right_splitter.setStretchFactor(1, 3)
+        chart_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        chart_splitter.addWidget(chart_group)
+        chart_splitter.addWidget(log_group)
+        chart_splitter.setStretchFactor(0, 7)
+        chart_splitter.setStretchFactor(1, 3)
+        chart_splitter.setSizes([540, 220])
 
-        outer_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        outer_splitter.addWidget(left_splitter)
-        outer_splitter.addWidget(right_splitter)
-        outer_splitter.setStretchFactor(0, 45)
-        outer_splitter.setStretchFactor(1, 55)
-        return outer_splitter
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        splitter.addWidget(strategy_splitter)
+        splitter.addWidget(chart_splitter)
+        splitter.setStretchFactor(0, 42)
+        splitter.setStretchFactor(1, 58)
+        splitter.setSizes([620, 860])
+        return splitter
+
+    def create_panel_group(
+        self,
+        title: str,
+        widget: QtWidgets.QWidget,
+        toolbar_widget: QtWidgets.QWidget | None = None,
+    ) -> QtWidgets.QGroupBox:
+        """给右侧工作区控件补上标题，避免布局挤压后难以分辨区域。"""
+        group = QtWidgets.QGroupBox(title)
+        layout = QtWidgets.QVBoxLayout()
+        layout.setContentsMargins(8, 10, 8, 8)
+        if toolbar_widget is not None:
+            toolbar_layout = QtWidgets.QHBoxLayout()
+            toolbar_layout.setContentsMargins(0, 0, 0, 0)
+            toolbar_layout.addStretch(1)
+            toolbar_layout.addWidget(toolbar_widget)
+            layout.addLayout(toolbar_layout)
+        layout.addWidget(widget)
+        group.setLayout(layout)
+        return group
 
     def create_state_table(self) -> QtWidgets.QTableWidget:
         """创建状态面板表格。"""
@@ -644,7 +707,10 @@ class AlertCenterWidget(QtWidgets.QWidget):
         primary_symbol = self.get_primary_enabled_symbol(self.current_config)
         if primary_symbol and data.vt_symbol != primary_symbol.vt_symbol:
             return
+        self.latest_chart_snapshot = data
         self.chart_widget.set_snapshot(data)
+        if self.chart_popup is not None:
+            self.chart_popup.set_snapshot(data)
 
     def update_state_row(self, data: SymbolStateData) -> None:
         """更新或新增一条状态行。"""
@@ -783,13 +849,35 @@ class AlertCenterWidget(QtWidgets.QWidget):
 
     def refresh_chart_placeholder(self, config: AppConfig) -> None:
         """在启动前根据当前配置刷新右侧图表的占位提示。"""
+        self.latest_chart_snapshot = None
         primary_symbol = self.get_primary_enabled_symbol(config)
         if primary_symbol is None:
-            self.chart_widget.clear_snapshot("暂无图表数据，请先启用至少一只股票")
+            message = "暂无图表数据，请先启用至少一只股票"
+            self.chart_widget.clear_snapshot(message)
+            if self.chart_popup is not None:
+                self.chart_popup.clear_snapshot(message)
             return
-        self.chart_widget.clear_snapshot(
-            f"等待 {primary_symbol.vt_symbol} 图表数据，请先执行单次测试或启动提醒"
-        )
+        message = f"等待 {primary_symbol.vt_symbol} 图表数据，请先执行单次测试或启动提醒"
+        self.chart_widget.clear_snapshot(message)
+        if self.chart_popup is not None:
+            self.chart_popup.clear_snapshot(message)
+
+    def open_chart_popup(self) -> None:
+        """打开或复用放大查看弹窗，并同步最新图表快照。"""
+        if self.chart_popup is None:
+            self.chart_popup = AlertChartPopupWindow(self)
+
+        if self.latest_chart_snapshot is not None:
+            self.chart_popup.set_snapshot(self.latest_chart_snapshot)
+        else:
+            primary_symbol = self.get_primary_enabled_symbol(self.current_config)
+            if primary_symbol is None:
+                message = "暂无图表数据，请先启用至少一只股票"
+            else:
+                message = f"等待 {primary_symbol.vt_symbol} 图表数据，请先执行单次测试或启动提醒"
+            self.chart_popup.clear_snapshot(message)
+
+        self.chart_popup.show_and_activate()
 
     def set_combo_data(self, combo: QtWidgets.QComboBox, value: str) -> None:
         """按 userData 选择下拉项。"""

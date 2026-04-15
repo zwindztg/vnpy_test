@@ -173,7 +173,7 @@ class ChartBarData:
 
 @dataclass(frozen=True)
 class ChartMarkerData:
-    """图表上的红绿提醒标记。"""
+    """图表上的红绿买卖信号标记。"""
 
     dt: datetime
     price: float
@@ -384,6 +384,315 @@ def validate_volume_breakout_params(params: dict[str, ParamValue]) -> None:
         raise ValueError("突破观察周期应大于离场观察周期。")
     if volume_ratio <= 0:
         raise ValueError("放量倍数阈值必须大于 0。")
+
+
+def build_chart_bar_data(
+    bars: list[AlertBar],
+    limit: int | None = None,
+) -> tuple[ChartBarData, ...]:
+    """把原始 K 线转换成图表控件使用的轻量数据结构。"""
+    selected_bars = bars[-limit:] if limit else bars
+    return tuple(
+        ChartBarData(
+            dt=bar.dt,
+            open_price=bar.open_price,
+            high_price=bar.high_price,
+            low_price=bar.low_price,
+            close_price=bar.close_price,
+        )
+        for bar in selected_bars
+    )
+
+
+def make_chart_marker(
+    dt: datetime,
+    price: float,
+    direction: str,
+    rule_name: str,
+    message: str,
+) -> ChartMarkerData:
+    """统一创建图表买卖点，方便后续在图上复用同一结构。"""
+    return ChartMarkerData(
+        dt=dt,
+        price=price,
+        direction=direction,
+        rule_name=rule_name,
+        message=message,
+    )
+
+
+def build_chart_markers(
+    strategy_name: str,
+    params: dict[str, ParamValue],
+    bars: list[AlertBar],
+) -> tuple[ChartMarkerData, ...]:
+    """按策略定义扫描理论买卖点，仅供图表显示使用。"""
+    normalized = normalize_strategy_name(strategy_name)
+    if normalized == BASIC_ALERT_STRATEGY:
+        return tuple(build_basic_chart_markers(params, bars))
+    if normalized == LESSON_A_SHARE_LONG_ONLY:
+        return tuple(build_ma_cross_chart_markers(params, bars))
+    if normalized == LESSON_DONCHIAN:
+        return tuple(build_donchian_chart_markers(params, bars))
+    if normalized == LESSON_VOLUME_BREAKOUT:
+        return tuple(build_volume_breakout_chart_markers(params, bars))
+    return ()
+
+
+def build_basic_chart_markers(
+    params: dict[str, ParamValue],
+    bars: list[AlertBar],
+) -> list[ChartMarkerData]:
+    """基础提醒策略按阈值连续打点，并补上均线金叉事件。"""
+    if not bars:
+        return []
+
+    breakout_price = float(params["breakout_price"])
+    stop_loss_price = float(params["stop_loss_price"])
+    fast_ma_window = int(params["fast_ma_window"])
+    slow_ma_window = int(params["slow_ma_window"])
+
+    markers: list[ChartMarkerData] = []
+    close_series = pd.Series([bar.close_price for bar in bars], dtype="float64")
+    fast_ma = close_series.rolling(fast_ma_window).mean()
+    slow_ma = close_series.rolling(slow_ma_window).mean()
+
+    for index, bar in enumerate(bars):
+        if bar.close_price >= breakout_price:
+            markers.append(
+                make_chart_marker(
+                    dt=bar.dt,
+                    price=bar.close_price,
+                    direction="buy",
+                    rule_name="breakout",
+                    message=(
+                        f"理论买点：收盘站上突破价 {breakout_price:.3f}，"
+                        f"当前收盘={bar.close_price:.3f}"
+                    ),
+                )
+            )
+        if bar.close_price <= stop_loss_price:
+            markers.append(
+                make_chart_marker(
+                    dt=bar.dt,
+                    price=bar.close_price,
+                    direction="sell",
+                    rule_name="stop_loss",
+                    message=(
+                        f"理论卖点：收盘跌破止损价 {stop_loss_price:.3f}，"
+                        f"当前收盘={bar.close_price:.3f}"
+                    ),
+                )
+            )
+
+        if index < 1:
+            continue
+
+        fast_ma0 = fast_ma.iloc[index]
+        fast_ma1 = fast_ma.iloc[index - 1]
+        slow_ma0 = slow_ma.iloc[index]
+        slow_ma1 = slow_ma.iloc[index - 1]
+        if pd.isna(fast_ma0) or pd.isna(fast_ma1) or pd.isna(slow_ma0) or pd.isna(slow_ma1):
+            continue
+
+        cross_over = bool(fast_ma0 >= slow_ma0 and fast_ma1 < slow_ma1)
+        if cross_over:
+            markers.append(
+                make_chart_marker(
+                    dt=bar.dt,
+                    price=bar.close_price,
+                    direction="buy",
+                    rule_name="golden_cross",
+                    message=(
+                        f"理论买点：均线金叉，快线={float(fast_ma0):.3f}，"
+                        f"慢线={float(slow_ma0):.3f}"
+                    ),
+                )
+            )
+
+    return markers
+
+
+def build_ma_cross_chart_markers(
+    params: dict[str, ParamValue],
+    bars: list[AlertBar],
+) -> list[ChartMarkerData]:
+    """长仓学习策略只在金叉/死叉的事件 K 线上打点。"""
+    fast_window = int(params["fast_window"])
+    slow_window = int(params["slow_window"])
+    if len(bars) < slow_window + 1:
+        return []
+
+    markers: list[ChartMarkerData] = []
+    close_series = pd.Series([bar.close_price for bar in bars], dtype="float64")
+    fast_ma = close_series.rolling(fast_window).mean()
+    slow_ma = close_series.rolling(slow_window).mean()
+
+    for index in range(1, len(bars)):
+        fast_ma0 = fast_ma.iloc[index]
+        fast_ma1 = fast_ma.iloc[index - 1]
+        slow_ma0 = slow_ma.iloc[index]
+        slow_ma1 = slow_ma.iloc[index - 1]
+        if pd.isna(fast_ma0) or pd.isna(fast_ma1) or pd.isna(slow_ma0) or pd.isna(slow_ma1):
+            continue
+
+        bar = bars[index]
+        cross_over = bool(fast_ma0 >= slow_ma0 and fast_ma1 < slow_ma1)
+        cross_below = bool(fast_ma0 <= slow_ma0 and fast_ma1 > slow_ma1)
+        if cross_over:
+            markers.append(
+                make_chart_marker(
+                    dt=bar.dt,
+                    price=bar.close_price,
+                    direction="buy",
+                    rule_name="golden_cross",
+                    message=(
+                        f"理论买点：均线金叉，快线={float(fast_ma0):.3f}，"
+                        f"慢线={float(slow_ma0):.3f}"
+                    ),
+                )
+            )
+        elif cross_below:
+            markers.append(
+                make_chart_marker(
+                    dt=bar.dt,
+                    price=bar.close_price,
+                    direction="sell",
+                    rule_name="death_cross",
+                    message=(
+                        f"理论卖点：均线死叉，快线={float(fast_ma0):.3f}，"
+                        f"慢线={float(slow_ma0):.3f}"
+                    ),
+                )
+            )
+
+    return markers
+
+
+def build_donchian_chart_markers(
+    params: dict[str, ParamValue],
+    bars: list[AlertBar],
+) -> list[ChartMarkerData]:
+    """唐奇安策略按入场/离场事件回放理论买卖点。"""
+    entry_window = int(params["entry_window"])
+    exit_window = int(params["exit_window"])
+    required_window = max(entry_window, exit_window) + 1
+    if len(bars) < required_window:
+        return []
+
+    markers: list[ChartMarkerData] = []
+    high_series = pd.Series([bar.high_price for bar in bars], dtype="float64")
+    low_series = pd.Series([bar.low_price for bar in bars], dtype="float64")
+    entry_up = high_series.shift(1).rolling(entry_window).max()
+    exit_down = low_series.shift(1).rolling(exit_window).min()
+
+    current_long = False
+    for index, bar in enumerate(bars):
+        entry_value = entry_up.iloc[index]
+        exit_value = exit_down.iloc[index]
+        if pd.isna(entry_value) or pd.isna(exit_value):
+            continue
+
+        entry_price = float(entry_value)
+        exit_price = float(exit_value)
+        if not current_long and bar.close_price > entry_price:
+            markers.append(
+                make_chart_marker(
+                    dt=bar.dt,
+                    price=bar.close_price,
+                    direction="buy",
+                    rule_name="donchian_breakout",
+                    message=(
+                        f"理论买点：收盘突破唐奇安上轨 {entry_price:.3f}，"
+                        f"当前收盘={bar.close_price:.3f}"
+                    ),
+                )
+            )
+            current_long = True
+        elif current_long and bar.close_price < exit_price:
+            markers.append(
+                make_chart_marker(
+                    dt=bar.dt,
+                    price=bar.close_price,
+                    direction="sell",
+                    rule_name="donchian_exit",
+                    message=(
+                        f"理论卖点：收盘跌破唐奇安离场线 {exit_price:.3f}，"
+                        f"当前收盘={bar.close_price:.3f}"
+                    ),
+                )
+            )
+            current_long = False
+
+    return markers
+
+
+def build_volume_breakout_chart_markers(
+    params: dict[str, ParamValue],
+    bars: list[AlertBar],
+) -> list[ChartMarkerData]:
+    """放量突破策略按入场/离场事件回放理论买卖点。"""
+    breakout_window = int(params["breakout_window"])
+    exit_window = int(params["exit_window"])
+    volume_window = int(params["volume_window"])
+    volume_ratio_threshold = float(params["volume_ratio"])
+    required_window = max(breakout_window, exit_window, volume_window) + 1
+    if len(bars) < required_window:
+        return []
+
+    markers: list[ChartMarkerData] = []
+    high_series = pd.Series([bar.high_price for bar in bars], dtype="float64")
+    low_series = pd.Series([bar.low_price for bar in bars], dtype="float64")
+    volume_series = pd.Series([bar.volume for bar in bars], dtype="float64")
+    entry_up = high_series.shift(1).rolling(breakout_window).max()
+    exit_down = low_series.shift(1).rolling(exit_window).min()
+    volume_ma = volume_series.shift(1).rolling(volume_window).mean()
+
+    current_long = False
+    for index, bar in enumerate(bars):
+        entry_value = entry_up.iloc[index]
+        exit_value = exit_down.iloc[index]
+        volume_ma_value = volume_ma.iloc[index]
+        if pd.isna(entry_value) or pd.isna(exit_value) or pd.isna(volume_ma_value):
+            continue
+
+        entry_price = float(entry_value)
+        exit_price = float(exit_value)
+        avg_volume = float(volume_ma_value)
+        ratio_value = bar.volume / avg_volume if avg_volume > 0 else 0.0
+        breakout_signal = bar.close_price > entry_price and ratio_value >= volume_ratio_threshold
+        exit_signal = bar.close_price < exit_price
+
+        if not current_long and breakout_signal:
+            markers.append(
+                make_chart_marker(
+                    dt=bar.dt,
+                    price=bar.close_price,
+                    direction="buy",
+                    rule_name="volume_breakout",
+                    message=(
+                        f"理论买点：放量突破，突破线={entry_price:.3f}，"
+                        f"量比={ratio_value:.2f}"
+                    ),
+                )
+            )
+            current_long = True
+        elif current_long and exit_signal:
+            markers.append(
+                make_chart_marker(
+                    dt=bar.dt,
+                    price=bar.close_price,
+                    direction="sell",
+                    rule_name="volume_exit",
+                    message=(
+                        f"理论卖点：跌破短线离场线 {exit_price:.3f}，"
+                        f"当前收盘={bar.close_price:.3f}"
+                    ),
+                )
+            )
+            current_long = False
+
+    return markers
 
 
 class BaseAlertEvaluator:
@@ -1661,7 +1970,6 @@ class SymbolAlertService:
         self.stale_logged: bool = False
         self.state: SymbolStateData = build_default_state(self.config)
         self.chart_enabled: bool = False
-        self.chart_markers: list[ChartMarkerData] = []
 
     def set_data_source(self, source_name: str) -> None:
         """记录当前这只股票本轮实际使用的数据源。"""
@@ -1732,7 +2040,7 @@ class SymbolAlertService:
         result = self.evaluator.evaluate(self, bars, now)
         self.state.signal_state = result.signal_state
         for alert in result.alerts:
-            self.emit_rule_alert(alert, latest_bar.close_price)
+            self.emit_rule_alert(alert)
         self.emit_chart_snapshot(bars, chart_mode, now)
         self.emit_state()
 
@@ -1925,7 +2233,7 @@ class SymbolAlertService:
             return True
         return (now - state.last_alert_at).total_seconds() >= self.app_config.cooldown_seconds
 
-    def emit_rule_alert(self, signal: AlertSignal, marker_price: float) -> None:
+    def emit_rule_alert(self, signal: AlertSignal) -> None:
         """统一输出提醒并写入本地记录，方便后续复盘。"""
         self.log("INFO", f"{signal.level.value}提醒：{signal.message}")
 
@@ -1943,57 +2251,28 @@ class SymbolAlertService:
         self.history_writer.write(record)
         self.record_callback(record)
         self.state.last_alert_at = datetime.now(CHINA_TZ).strftime("%Y-%m-%d %H:%M:%S")
-        self.append_chart_marker(signal, marker_price)
-
-    def append_chart_marker(self, signal: AlertSignal, marker_price: float) -> None:
-        """把当前会话内的提醒打点到右侧 K 线图。"""
-        if not self.chart_enabled:
-            return
-
-        direction = "buy" if signal.level == AlertLevel.OBSERVE else "sell"
-        marker = ChartMarkerData(
-            dt=signal.triggered_bar_dt,
-            price=marker_price,
-            direction=direction,
-            rule_name=signal.rule_name,
-            message=signal.message,
-        )
-        for existing in self.chart_markers:
-            if (
-                existing.dt == marker.dt
-                and existing.rule_name == marker.rule_name
-                and existing.direction == marker.direction
-            ):
-                return
-
-        self.chart_markers.append(marker)
-        if len(self.chart_markers) > 200:
-            self.chart_markers = self.chart_markers[-200:]
 
     def emit_chart_snapshot(self, bars: list[AlertBar], mode: str, reference_time: datetime) -> None:
-        """把最近一段 K 线和当前会话标记推给 GUI。"""
+        """把最近一段 K 线和理论买卖点快照推给 GUI。"""
         if not self.chart_enabled or not bars:
             return
 
         visible_bars = bars[-120:]
         start_dt = visible_bars[0].dt
+        visible_bar_data = build_chart_bar_data(visible_bars)
+        theoretical_markers = build_chart_markers(
+            strategy_name=self.config.strategy_name,
+            params=self.config.params,
+            bars=bars,
+        )
         snapshot = ChartSnapshotData(
             vt_symbol=self.config.vt_symbol,
             strategy_name=self.config.strategy_name,
             interval=self.app_config.interval,
             data_source=self.state.data_source,
             mode=mode,
-            bars=tuple(
-                ChartBarData(
-                    dt=bar.dt,
-                    open_price=bar.open_price,
-                    high_price=bar.high_price,
-                    low_price=bar.low_price,
-                    close_price=bar.close_price,
-                )
-                for bar in visible_bars
-            ),
-            markers=tuple(marker for marker in self.chart_markers if marker.dt >= start_dt),
+            bars=visible_bar_data,
+            markers=tuple(marker for marker in theoretical_markers if marker.dt >= start_dt),
             reference_time=reference_time,
         )
         self.chart_callback(snapshot)

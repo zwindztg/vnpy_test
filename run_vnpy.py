@@ -1028,7 +1028,7 @@ def patch_backtesting_setting_editor() -> None:
 def patch_main_window_behavior() -> None:
     """改善主窗口交互体验。"""
     from vnpy.trader.ui.mainwindow import MainWindow
-    from vnpy.trader.ui import QtGui, QtWidgets
+    from vnpy.trader.ui import QtCore, QtGui, QtWidgets
 
     if not getattr(MainWindow, "_vnpy_test_open_widget_patched", False):
         def open_widget(self, widget_class: type[QtWidgets.QWidget], name: str) -> None:
@@ -1052,6 +1052,20 @@ def patch_main_window_behavior() -> None:
 
         MainWindow.open_widget = open_widget
         MainWindow._vnpy_test_open_widget_patched = True
+
+    if not getattr(MainWindow, "_vnpy_test_close_shortcut_patched", False):
+        original_init = MainWindow.__init__
+
+        def __init__(self, *args, **kwargs):
+            """为主窗口补上标准关闭快捷键，让 macOS 下 Command+W 可用。"""
+            original_init(self, *args, **kwargs)
+            shortcut = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Close, self)
+            shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(self.close)
+            self._vnpy_test_close_shortcut = shortcut
+
+        MainWindow.__init__ = __init__
+        MainWindow._vnpy_test_close_shortcut_patched = True
 
     if not getattr(MainWindow, "_vnpy_test_close_event_patched", False):
         def closeEvent(self, event: QtGui.QCloseEvent) -> None:

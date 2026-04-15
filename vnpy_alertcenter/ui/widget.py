@@ -8,7 +8,7 @@ import html
 from pathlib import Path
 
 from vnpy.event import Event
-from vnpy.trader.ui import QtCore, QtWidgets
+from vnpy.trader.ui import QtCore, QtGui, QtWidgets
 
 from ..core import (
     BASIC_ALERT_STRATEGY,
@@ -118,6 +118,10 @@ class AlertCenterWidget(QtWidgets.QWidget):
         """初始化整个窗口布局。"""
         self.setWindowTitle("实时提醒中心")
         self.resize(1600, 940)
+        self.close_shortcut = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Close, self)
+        # 让 macOS 下的 Command+W 直接关闭当前提醒窗口，不影响主窗口退出逻辑。
+        self.close_shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.close_shortcut.activated.connect(self.close)
 
         layout = QtWidgets.QVBoxLayout()
         layout.addLayout(self.create_control_bar())

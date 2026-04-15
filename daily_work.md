@@ -174,3 +174,12 @@
   - 在 [vnpy_alertcenter/engine.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/engine.py) 中新增图表事件分发，把首个启用股票的图表快照同步发送给界面层。
   - 新增 [vnpy_alertcenter/ui/chart_widget.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/ui/chart_widget.py)，使用 Qt 自绘最简版 K 线图，并在提醒触发时用绿色/红色三角标记观察类和风控类信号。
   - 调整 [vnpy_alertcenter/ui/widget.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/ui/widget.py) 的底部布局，改为“左侧状态表/记录表，右侧图表/日志”的结构，并让图表默认跟随首个启用股票。
+
+## 2026-04-15 12:12:56 +08:00
+
+- 提交号：`5439c4e`
+- 提交信息：`feat: 优化主窗口前置与退出交互 / improve main window focus and exit interaction`
+- 详细说明：
+  - 调整 [run_vnpy.py](/Users/zezhang/Documents/codex/vnpy/run_vnpy.py) 中的 `patch_main_window_behavior()`，把窗口前置补丁和关闭行为补丁拆开处理，避免重复安装时相互覆盖。
+  - 保留 macOS 下功能窗口“打开后自动恢复、前置并激活”的逻辑，继续解决点菜单后窗口出现在后台的问题。
+  - 为主窗口增加统一的 `closeEvent` 补丁，让退出确认默认聚焦“是”，并在确认退出时按顺序关闭子窗口、保存 monitor 配置、保存窗口状态后再关闭主引擎。

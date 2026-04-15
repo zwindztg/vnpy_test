@@ -164,3 +164,13 @@
   - 在 [vnpy_alertcenter/ui/widget.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/ui/widget.py) 中增加顶部“当前模式”标签，并为日志补充会话分隔线、模式徽标和颜色区分，让“单次测试”和“实时运行”在界面上更容易分辨。
   - 为基础提醒策略增加按股票代码自动刷新默认阈值的逻辑，打开界面、重新加载配置、切换回基础提醒策略或修改股票代码后，都会重新计算默认突破价和止损价。
   - 在 [vnpy_alertcenter/core.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/core.py) 中新增最近交易日开盘价读取链路，按 `pytdx -> 东财分钟线 -> 本地日线` 的顺序获取参考开盘价，并把基础提醒策略默认值设置为“开盘价上浮 2% / 下浮 2%”。
+
+## 2026-04-15 12:06:22 +08:00
+
+- 提交号：`8e785b5`
+- 提交信息：`feat: 为实时提醒中心增加右侧K线图 / add right-side candlestick chart to alert center`
+- 详细说明：
+  - 在 [vnpy_alertcenter/core.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/core.py) 中补齐 `AlertBar` 的开盘价字段，并新增图表快照、图表标记等数据结构，让提醒引擎在不重复拉数的前提下把最近一段完整 K 线推给 GUI。
+  - 在 [vnpy_alertcenter/engine.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/engine.py) 中新增图表事件分发，把首个启用股票的图表快照同步发送给界面层。
+  - 新增 [vnpy_alertcenter/ui/chart_widget.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/ui/chart_widget.py)，使用 Qt 自绘最简版 K 线图，并在提醒触发时用绿色/红色三角标记观察类和风控类信号。
+  - 调整 [vnpy_alertcenter/ui/widget.py](/Users/zezhang/Documents/codex/vnpy/vnpy_alertcenter/ui/widget.py) 的底部布局，改为“左侧状态表/记录表，右侧图表/日志”的结构，并让图表默认跟随首个启用股票。

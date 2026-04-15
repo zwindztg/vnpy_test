@@ -183,3 +183,14 @@
   - 调整 [run_vnpy.py](/Users/zezhang/Documents/codex/vnpy/run_vnpy.py) 中的 `patch_main_window_behavior()`，把窗口前置补丁和关闭行为补丁拆开处理，避免重复安装时相互覆盖。
   - 保留 macOS 下功能窗口“打开后自动恢复、前置并激活”的逻辑，继续解决点菜单后窗口出现在后台的问题。
   - 为主窗口增加统一的 `closeEvent` 补丁，让退出确认默认聚焦“是”，并在确认退出时按顺序关闭子窗口、保存 monitor 配置、保存窗口状态后再关闭主引擎。
+
+## 2026-04-15 16:02:02 +08:00
+
+- 提交号：`8663a6b`
+- 提交信息：`feat: 完善提醒中心K线图交互 / enhance alert center chart interactions`
+- 详细说明：
+  - 在 [vnpy_alertcenter/core.py](/Users/zezhang/Documents/codex/vnpy_test/vnpy_alertcenter/core.py) 中把图表标记改为按策略扫描理论买卖点，并补充基础提醒、均线、唐奇安、放量突破的图表打点逻辑，让 K 线图与真实提醒日志/CSV 记录解耦。
+  - 新增 [vnpy_alertcenter/ui/chart_view.py](/Users/zezhang/Documents/codex/vnpy_test/vnpy_alertcenter/ui/chart_view.py)，把“最新交易日裁切、日内缩放、平移边界和拖动换算”抽成纯逻辑，便于后续维护和测试。
+  - 重构 [vnpy_alertcenter/ui/chart_widget.py](/Users/zezhang/Documents/codex/vnpy_test/vnpy_alertcenter/ui/chart_widget.py) 的绘制与交互：补上横轴时间刻度、放大查看弹窗、按钮与滚轮缩放、鼠标抓取拖动平移，以及弹窗下的 `Command+W` 关闭支持。
+  - 调整 [vnpy_alertcenter/ui/widget.py](/Users/zezhang/Documents/codex/vnpy_test/vnpy_alertcenter/ui/widget.py) 的提醒中心布局，把全局设置/股票配置/运行信息放到左侧，右侧改为“策略状态/提醒记录 + K 线图/日志”，并在 K 线图面板上增加“放大查看”入口。
+  - 新增 [tests/test_alertcenter_chart_markers.py](/Users/zezhang/Documents/codex/vnpy_test/tests/test_alertcenter_chart_markers.py) 和 [tests/test_alertcenter_chart_view.py](/Users/zezhang/Documents/codex/vnpy_test/tests/test_alertcenter_chart_view.py)，分别覆盖理论买卖点生成和日内缩放/平移视图逻辑。

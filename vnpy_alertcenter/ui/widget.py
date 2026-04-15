@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+import html
 from pathlib import Path
 
 from vnpy.event import Event
@@ -22,6 +23,7 @@ from ..core import (
     SymbolStateData,
     build_default_state,
     ensure_valid_symbol_config,
+    fetch_reference_open_price,
     get_default_strategy_params,
     get_strategy_definition,
     get_strategy_display_name,
@@ -99,6 +101,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.row_widgets: list[SymbolRowWidgets] = []
         self.state_rows: dict[str, int] = {}
         self.current_config: AppConfig = self.alert_engine.load_config()
+        self.current_log_mode: str = "neutral"
 
         self.init_ui()
         self.register_event()
@@ -129,6 +132,8 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.test_button = QtWidgets.QPushButton("单次测试")
         self.start_button = QtWidgets.QPushButton("启动提醒")
         self.stop_button = QtWidgets.QPushButton("停止提醒")
+        self.mode_label = QtWidgets.QLabel("空闲")
+        self.mode_label.setMinimumWidth(220)
         self.status_label = QtWidgets.QLabel("未启动")
         self.status_label.setMinimumWidth(260)
 
@@ -144,6 +149,8 @@ class AlertCenterWidget(QtWidgets.QWidget):
         layout.addWidget(self.start_button)
         layout.addWidget(self.stop_button)
         layout.addStretch(1)
+        layout.addWidget(QtWidgets.QLabel("当前模式："))
+        layout.addWidget(self.mode_label)
         layout.addWidget(QtWidgets.QLabel("整体状态："))
         layout.addWidget(self.status_label)
         return layout
@@ -224,6 +231,9 @@ class AlertCenterWidget(QtWidgets.QWidget):
 
             row_widgets.strategy_combo.currentIndexChanged.connect(
                 lambda _value, row_index=row: self.on_strategy_changed(row_index)
+            )
+            row_widgets.vt_symbol.editingFinished.connect(
+                lambda row_index=row: self.on_symbol_edited(row_index)
             )
             self.apply_strategy_to_row(row_widgets, BASIC_ALERT_STRATEGY)
 
@@ -327,6 +337,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.load_recent_records()
         self.refresh_runtime_info()
         self.append_log("INFO", "UI", "已从配置文件重新加载提醒设置。")
+        self.set_mode_label("neutral", "空闲")
 
     def reset_row(self, row_widgets: SymbolRowWidgets) -> None:
         """把某一行恢复为默认展示。"""
@@ -360,6 +371,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
             row_widgets.strategy_combo.blockSignals(False)
             row_widgets.current_strategy_name = symbol.strategy_name
             self.apply_strategy_to_row(row_widgets, symbol.strategy_name, symbol.params)
+            self.refresh_basic_price_defaults(row_widgets)
 
     def collect_strategy_params(self, row_widgets: SymbolRowWidgets, strategy_name: str) -> dict[str, float | int]:
         """按当前策略读取一行参数。"""
@@ -420,6 +432,34 @@ class AlertCenterWidget(QtWidgets.QWidget):
         strategy_name = normalize_strategy_name(str(row_widgets.strategy_combo.currentData()))
         row_widgets.current_strategy_name = strategy_name
         self.apply_strategy_to_row(row_widgets, strategy_name)
+        self.refresh_basic_price_defaults(row_widgets)
+
+    def on_symbol_edited(self, row_index: int) -> None:
+        """用户修改股票代码后，按最近交易日开盘价刷新基础提醒默认值。"""
+        row_widgets = self.row_widgets[row_index]
+        self.refresh_basic_price_defaults(row_widgets)
+
+    def refresh_basic_price_defaults(self, row_widgets: SymbolRowWidgets) -> None:
+        """把基础提醒策略的突破价/止损价更新为最近交易日开盘价的正负 2%。"""
+        strategy_name = normalize_strategy_name(str(row_widgets.strategy_combo.currentData()))
+        vt_symbol = row_widgets.vt_symbol.text().strip().upper()
+        if strategy_name != BASIC_ALERT_STRATEGY or not vt_symbol:
+            return
+
+        try:
+            open_price, _source_name = fetch_reference_open_price(vt_symbol)
+        except Exception:
+            # 默认值获取失败时保留当前输入，避免影响用户继续操作。
+            return
+
+        params = row_widgets.cached_params.get(
+            BASIC_ALERT_STRATEGY,
+            get_default_strategy_params(BASIC_ALERT_STRATEGY),
+        ).copy()
+        params["breakout_price"] = round(open_price * 1.02, 3)
+        params["stop_loss_price"] = round(open_price * 0.98, 3)
+        row_widgets.cached_params[BASIC_ALERT_STRATEGY] = params
+        self.apply_strategy_to_row(row_widgets, BASIC_ALERT_STRATEGY, params)
 
     def collect_config_from_form(self) -> AppConfig:
         """把当前表单值组装成配置对象。"""
@@ -489,6 +529,9 @@ class AlertCenterWidget(QtWidgets.QWidget):
 
         self.current_config = config
         self.populate_state_placeholders(config)
+        self.current_log_mode = "preview"
+        self.set_mode_label("preview", f"单次测试 / {preview_dt.strftime('%m-%d %H:%M')}")
+        self.append_session_marker(f"单次测试开始：{preview_dt.strftime('%Y-%m-%d %H:%M')}", "preview")
         try:
             self.alert_engine.run_preview_once(config, preview_dt)
         except RuntimeError as exc:
@@ -506,11 +549,16 @@ class AlertCenterWidget(QtWidgets.QWidget):
 
         self.current_config = config
         self.populate_state_placeholders(config)
+        self.current_log_mode = "live"
+        self.set_mode_label("live", "实时运行")
+        self.append_session_marker("实时提醒启动", "live")
         self.alert_engine.start_alerting(config)
         self.refresh_runtime_info()
 
     def stop_alerting(self) -> None:
         """停止提醒线程。"""
+        self.set_mode_label("neutral", "停止中")
+        self.append_session_marker("实时提醒停止请求", "neutral")
         self.alert_engine.stop_alerting()
         self.refresh_runtime_info()
 
@@ -539,11 +587,20 @@ class AlertCenterWidget(QtWidgets.QWidget):
         """处理整体状态事件。"""
         data: RunnerStatusData = event.data
         self.status_label.setText(data.message)
-        if data.running and data.paused:
+        if not data.running and data.paused:
+            self.current_log_mode = "preview"
+            self.set_mode_label("preview", data.message)
+            self.status_label.setStyleSheet("color: #2563eb; font-weight: 600;")
+        elif data.running and data.paused:
+            self.set_mode_label("neutral", data.message)
             self.status_label.setStyleSheet("color: #d97706; font-weight: 600;")
         elif data.running:
+            self.current_log_mode = "live"
+            self.set_mode_label("live", "实时运行")
             self.status_label.setStyleSheet("color: #15803d; font-weight: 600;")
         else:
+            next_mode = "preview" if "测试完成" in data.message else "neutral"
+            self.set_mode_label(next_mode, data.message if next_mode == "preview" else "空闲")
             self.status_label.setStyleSheet("color: #475569; font-weight: 600;")
 
         self.start_button.setEnabled(not data.running)
@@ -609,7 +666,72 @@ class AlertCenterWidget(QtWidgets.QWidget):
     def append_log(self, level: str, source: str, message: str, timestamp: str | None = None) -> None:
         """向日志框追加一条格式化日志。"""
         log_time = timestamp or QtCore.QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
-        self.log_edit.append(f"[{log_time}] [{level}] [{source}] {message}")
+        mode = self.infer_log_mode(level, message)
+        badge_text, color = self.get_log_badge(mode, level, message)
+        line = (
+            f'<span style="color:#94a3b8;">[{html.escape(log_time)}]</span> '
+            f'<span style="color:{color}; font-weight:600;">[{html.escape(badge_text)}]</span> '
+            f'<span style="color:#cbd5e1;">[{html.escape(level)}] [{html.escape(source)}]</span> '
+            f'<span style="color:#e2e8f0;">{html.escape(message)}</span>'
+        )
+        self.log_edit.append(line)
+
+    def append_session_marker(self, title: str, mode: str) -> None:
+        """在日志区插入明显的会话分隔线，区分测试和真实运行。"""
+        badge_text, color = self.get_log_badge(mode, "INFO", title)
+        marker = (
+            f'<span style="color:{color}; font-weight:700;">'
+            f'========== {html.escape(badge_text)} · {html.escape(title)} =========='
+            "</span>"
+        )
+        self.log_edit.append(marker)
+
+    def infer_log_mode(self, level: str, message: str) -> str:
+        """根据日志内容判断当前属于测试模式还是实时运行模式。"""
+        if level == "ERROR":
+            return "error"
+        if "历史回放测试" in message or "测试中" in message or "测试完成" in message:
+            return "preview"
+        if "实时提醒已启动" in message or "提醒线程已停止" in message:
+            return "live"
+        return self.current_log_mode
+
+    def get_log_badge(self, mode: str, level: str, message: str) -> tuple[str, str]:
+        """为日志生成更醒目的模式标签和颜色。"""
+        if level == "ERROR":
+            return "错误", "#ef4444"
+        if "风控型提醒" in message:
+            return "风控", "#f59e0b"
+        if "观察型提醒" in message:
+            return "提醒", "#10b981"
+        if mode == "preview":
+            return "测试", "#2563eb"
+        if mode == "live":
+            return "实盘", "#16a34a"
+        return "系统", "#64748b"
+
+    def set_mode_label(self, mode: str, text: str) -> None:
+        """在顶部控制栏显示当前模式，避免只看日志才能分辨状态。"""
+        label_text = text.strip() or "空闲"
+        if mode == "preview":
+            color = "#2563eb"
+            background = "rgba(37, 99, 235, 0.15)"
+        elif mode == "live":
+            color = "#16a34a"
+            background = "rgba(22, 163, 74, 0.15)"
+        else:
+            color = "#64748b"
+            background = "rgba(100, 116, 139, 0.15)"
+
+        self.mode_label.setText(label_text)
+        self.mode_label.setStyleSheet(
+            "font-weight: 700;"
+            f"color: {color};"
+            f"background: {background};"
+            "border: 1px solid rgba(148, 163, 184, 0.35);"
+            "border-radius: 6px;"
+            "padding: 4px 10px;"
+        )
 
     def refresh_runtime_info(self) -> None:
         """刷新配置文件、记录文件和线程状态显示。"""

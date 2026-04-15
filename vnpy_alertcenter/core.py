@@ -86,6 +86,7 @@ PROJECT_PROXY_ENV_KEYS: tuple[str, ...] = (
     "no_proxy",
 )
 PYTDX_WORKING_HOST: tuple[str, str, int] | None = None
+OPEN_PRICE_CACHE: dict[tuple[str, str], tuple[float, str]] = {}
 
 BASIC_ALERT_STRATEGY = "BasicAlertStrategy"
 LESSON_A_SHARE_LONG_ONLY = "LessonAShareLongOnlyStrategy"
@@ -1137,6 +1138,112 @@ def stringify_path(path: Path) -> str:
         return str(path.relative_to(BASE_DIR))
     except ValueError:
         return str(path)
+
+
+def extract_session_open_price(df: pd.DataFrame) -> float:
+    """从分钟线里提取最近一个交易日的开盘价。"""
+    if df is None or df.empty:
+        raise ValueError("分钟线为空，无法提取开盘价。")
+
+    time_column = find_first_existing_column(df, ["时间", "datetime", "day"])
+    open_column = find_first_existing_column(df, ["开盘", "open"])
+    if time_column is None or open_column is None:
+        raise ValueError("分钟线缺少时间列或开盘价列。")
+
+    current = df.copy()
+    current[time_column] = pd.to_datetime(current[time_column])
+    current = current.sort_values(time_column).drop_duplicates(subset=[time_column], keep="last")
+    latest_trade_date = current[time_column].dt.date.max()
+    session_df = current[current[time_column].dt.date == latest_trade_date]
+    if session_df.empty:
+        raise ValueError("最近一个交易日没有可用分钟线。")
+
+    open_price = float(session_df.iloc[0][open_column])
+    if open_price <= 0:
+        raise ValueError("最近一个交易日开盘价无效。")
+    return round(open_price, 3)
+
+
+def query_local_daily_open_price(vt_symbol: str, now: datetime) -> float:
+    """从本地 sqlite 日线中读取最近一个交易日的开盘价。"""
+    symbol, exchange = split_vt_symbol(vt_symbol)
+    database_path = get_project_database_path()
+    if not database_path.exists():
+        raise ValueError("本地数据库文件不存在。")
+
+    sql = (
+        "select datetime, open_price from dbbardata "
+        "where symbol = ? and exchange = ? and interval = 'd' and datetime <= ? "
+        "order by datetime desc limit 1"
+    )
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            sql,
+            (
+                symbol,
+                exchange,
+                now.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        ).fetchone()
+
+    if not row:
+        raise ValueError("本地数据库没有可用日线。")
+
+    open_price = float(row[1])
+    if open_price <= 0:
+        raise ValueError("本地数据库日线开盘价无效。")
+    return round(open_price, 3)
+
+
+def fetch_reference_open_price(vt_symbol: str, now: datetime | None = None) -> tuple[float, str]:
+    """按 pytdx -> 东财 -> 本地日线 的顺序获取最近交易日开盘价。"""
+    current_dt = ensure_china_tz(now or datetime.now(CHINA_TZ))
+    cache_key = (vt_symbol.strip().upper(), current_dt.strftime("%Y-%m-%d"))
+    cached = OPEN_PRICE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    symbol, exchange = split_vt_symbol(vt_symbol)
+    start_dt = current_dt - timedelta(days=5)
+    end_dt = current_dt + timedelta(minutes=1)
+    errors: list[str] = []
+
+    try:
+        pytdx_df, source_name = fetch_pytdx_minute_dataframe(
+            symbol=symbol,
+            exchange=exchange,
+            interval="1m",
+            start_dt=start_dt,
+            end_dt=end_dt,
+        )
+        result = (extract_session_open_price(pytdx_df), source_name)
+        OPEN_PRICE_CACHE[cache_key] = result
+        return result
+    except Exception as exc:
+        errors.append(f"pytdx={exc}")
+
+    try:
+        eastmoney_df = fetch_eastmoney_minute_dataframe(
+            symbol=symbol,
+            period="1",
+            adjust="",
+            start_dt=start_dt,
+            end_dt=end_dt,
+        )
+        result = (extract_session_open_price(eastmoney_df), "东财分钟线")
+        OPEN_PRICE_CACHE[cache_key] = result
+        return result
+    except Exception as exc:
+        errors.append(f"东财={exc}")
+
+    try:
+        result = (query_local_daily_open_price(vt_symbol, current_dt), "本地日线")
+        OPEN_PRICE_CACHE[cache_key] = result
+        return result
+    except Exception as exc:
+        errors.append(f"本地日线={exc}")
+
+    raise ValueError("；".join(errors))
 
 
 def get_pytdx_market(exchange: str) -> int:

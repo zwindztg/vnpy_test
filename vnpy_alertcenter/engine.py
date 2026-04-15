@@ -13,6 +13,7 @@ from vnpy.trader.engine import BaseEngine, MainEngine
 from .core import (
     AlertCenterRunner,
     AppConfig,
+    ChartSnapshotData,
     DEFAULT_CONFIG_PATH,
     LogData,
     RecordData,
@@ -32,6 +33,7 @@ EVENT_ALERTCENTER_LOG = "eAlertCenterLog"
 EVENT_ALERTCENTER_STATUS = "eAlertCenterStatus"
 EVENT_ALERTCENTER_RECORD = "eAlertCenterRecord"
 EVENT_ALERTCENTER_STATE = "eAlertCenterState"
+EVENT_ALERTCENTER_CHART = "eAlertCenterChart"
 
 
 class AlertCenterEngine(BaseEngine):
@@ -72,6 +74,7 @@ class AlertCenterEngine(BaseEngine):
                 status_callback=self.process_status,
                 record_callback=self.process_record,
                 state_callback=self.process_state,
+                chart_callback=self.process_chart,
             )
             thread = Thread(
                 target=self._run_loop,
@@ -98,6 +101,7 @@ class AlertCenterEngine(BaseEngine):
             status_callback=self.process_status,
             record_callback=self.process_record,
             state_callback=self.process_state,
+            chart_callback=self.process_chart,
         )
         runner.run_preview_once(reference_time)
 
@@ -175,6 +179,10 @@ class AlertCenterEngine(BaseEngine):
             error = send_desktop_notification("vn.py 实时提醒", data.message)
             if error and "当前系统不是 macOS" not in error:
                 self.write_log(f"桌面通知失败：{error}", source="Notifier", level="ERROR")
+
+    def process_chart(self, data: ChartSnapshotData) -> None:
+        """把图表快照事件发给 GUI。"""
+        self.event_engine.put(Event(EVENT_ALERTCENTER_CHART, data))
 
     def write_log(self, message: str, source: str = "Engine", level: str = "INFO") -> None:
         """对外提供简单日志接口。"""

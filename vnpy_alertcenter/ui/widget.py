@@ -13,6 +13,7 @@ from vnpy.trader.ui import QtCore, QtWidgets
 from ..core import (
     BASIC_ALERT_STRATEGY,
     CHINA_TZ,
+    ChartSnapshotData,
     MAX_SYMBOL_COUNT,
     STRATEGY_ORDER,
     AppConfig,
@@ -31,12 +32,14 @@ from ..core import (
 )
 from ..engine import (
     APP_NAME,
+    EVENT_ALERTCENTER_CHART,
     EVENT_ALERTCENTER_LOG,
     EVENT_ALERTCENTER_RECORD,
     EVENT_ALERTCENTER_STATE,
     EVENT_ALERTCENTER_STATUS,
     AlertCenterEngine,
 )
+from .chart_widget import AlertChartWidget
 
 
 @dataclass
@@ -68,6 +71,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
     signal_status: QtCore.Signal = QtCore.Signal(Event)
     signal_record: QtCore.Signal = QtCore.Signal(Event)
     signal_state: QtCore.Signal = QtCore.Signal(Event)
+    signal_chart: QtCore.Signal = QtCore.Signal(Event)
 
     STATE_HEADERS: tuple[str, ...] = (
         "股票",
@@ -256,21 +260,29 @@ class AlertCenterWidget(QtWidgets.QWidget):
         return group
 
     def create_bottom_splitter(self) -> QtWidgets.QSplitter:
-        """创建状态、记录和日志三块视图。"""
-        state_record_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        state_record_splitter.addWidget(self.create_state_table())
-        state_record_splitter.addWidget(self.create_record_table())
-        state_record_splitter.setStretchFactor(0, 1)
-        state_record_splitter.setStretchFactor(1, 1)
+        """创建左侧表格、右侧图表和日志的主视图。"""
+        left_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        left_splitter.addWidget(self.create_state_table())
+        left_splitter.addWidget(self.create_record_table())
+        left_splitter.setStretchFactor(0, 1)
+        left_splitter.setStretchFactor(1, 1)
+
+        self.chart_widget = AlertChartWidget()
 
         self.log_edit = QtWidgets.QTextEdit()
         self.log_edit.setReadOnly(True)
 
-        outer_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
-        outer_splitter.addWidget(state_record_splitter)
-        outer_splitter.addWidget(self.log_edit)
-        outer_splitter.setStretchFactor(0, 3)
-        outer_splitter.setStretchFactor(1, 2)
+        right_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        right_splitter.addWidget(self.chart_widget)
+        right_splitter.addWidget(self.log_edit)
+        right_splitter.setStretchFactor(0, 7)
+        right_splitter.setStretchFactor(1, 3)
+
+        outer_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        outer_splitter.addWidget(left_splitter)
+        outer_splitter.addWidget(right_splitter)
+        outer_splitter.setStretchFactor(0, 45)
+        outer_splitter.setStretchFactor(1, 55)
         return outer_splitter
 
     def create_state_table(self) -> QtWidgets.QTableWidget:
@@ -323,11 +335,13 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.signal_status.connect(self.process_status_event)
         self.signal_record.connect(self.process_record_event)
         self.signal_state.connect(self.process_state_event)
+        self.signal_chart.connect(self.process_chart_event)
 
         self.event_engine.register(EVENT_ALERTCENTER_LOG, self.signal_log.emit)
         self.event_engine.register(EVENT_ALERTCENTER_STATUS, self.signal_status.emit)
         self.event_engine.register(EVENT_ALERTCENTER_RECORD, self.signal_record.emit)
         self.event_engine.register(EVENT_ALERTCENTER_STATE, self.signal_state.emit)
+        self.event_engine.register(EVENT_ALERTCENTER_CHART, self.signal_chart.emit)
 
     def load_config_from_engine(self) -> None:
         """重新从磁盘读取配置并刷新界面。"""
@@ -338,6 +352,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.refresh_runtime_info()
         self.append_log("INFO", "UI", "已从配置文件重新加载提醒设置。")
         self.set_mode_label("neutral", "空闲")
+        self.refresh_chart_placeholder(self.current_config)
 
     def reset_row(self, row_widgets: SymbolRowWidgets) -> None:
         """把某一行恢复为默认展示。"""
@@ -372,6 +387,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
             row_widgets.current_strategy_name = symbol.strategy_name
             self.apply_strategy_to_row(row_widgets, symbol.strategy_name, symbol.params)
             self.refresh_basic_price_defaults(row_widgets)
+        self.refresh_chart_placeholder(config)
 
     def collect_strategy_params(self, row_widgets: SymbolRowWidgets, strategy_name: str) -> dict[str, float | int]:
         """按当前策略读取一行参数。"""
@@ -515,6 +531,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.alert_engine.save_config(config)
         self.current_config = config
         self.populate_state_placeholders(config)
+        self.refresh_chart_placeholder(config)
         self.refresh_runtime_info()
 
     def run_preview_once(self) -> None:
@@ -529,6 +546,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
 
         self.current_config = config
         self.populate_state_placeholders(config)
+        self.refresh_chart_placeholder(config)
         self.current_log_mode = "preview"
         self.set_mode_label("preview", f"单次测试 / {preview_dt.strftime('%m-%d %H:%M')}")
         self.append_session_marker(f"单次测试开始：{preview_dt.strftime('%Y-%m-%d %H:%M')}", "preview")
@@ -549,6 +567,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
 
         self.current_config = config
         self.populate_state_placeholders(config)
+        self.refresh_chart_placeholder(config)
         self.current_log_mode = "live"
         self.set_mode_label("live", "实时运行")
         self.append_session_marker("实时提醒启动", "live")
@@ -614,6 +633,14 @@ class AlertCenterWidget(QtWidgets.QWidget):
     def process_state_event(self, event: Event) -> None:
         """处理单只股票状态事件。"""
         self.update_state_row(event.data)
+
+    def process_chart_event(self, event: Event) -> None:
+        """处理右侧 K 线图快照事件。"""
+        data: ChartSnapshotData = event.data
+        primary_symbol = self.get_primary_enabled_symbol(self.current_config)
+        if primary_symbol and data.vt_symbol != primary_symbol.vt_symbol:
+            return
+        self.chart_widget.set_snapshot(data)
 
     def update_state_row(self, data: SymbolStateData) -> None:
         """更新或新增一条状态行。"""
@@ -742,6 +769,23 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.thread_label.setText("运行中" if running else "未运行")
         self.start_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
+
+    def get_primary_enabled_symbol(self, config: AppConfig) -> SymbolConfig | None:
+        """返回当前配置里首个启用的股票，供图表区复用。"""
+        for symbol in config.symbol_configs:
+            if symbol.enabled:
+                return symbol
+        return None
+
+    def refresh_chart_placeholder(self, config: AppConfig) -> None:
+        """在启动前根据当前配置刷新右侧图表的占位提示。"""
+        primary_symbol = self.get_primary_enabled_symbol(config)
+        if primary_symbol is None:
+            self.chart_widget.clear_snapshot("暂无图表数据，请先启用至少一只股票")
+            return
+        self.chart_widget.clear_snapshot(
+            f"等待 {primary_symbol.vt_symbol} 图表数据，请先执行单次测试或启动提醒"
+        )
 
     def set_combo_data(self, combo: QtWidgets.QComboBox, value: str) -> None:
         """按 userData 选择下拉项。"""

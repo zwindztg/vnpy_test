@@ -145,6 +145,7 @@ class AlertBar:
     """保存提醒逻辑需要的最小 K 线字段。"""
 
     dt: datetime
+    open_price: float
     close_price: float
     high_price: float
     low_price: float
@@ -157,6 +158,42 @@ class RuleRuntimeState:
 
     is_triggered: bool = False
     last_alert_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ChartBarData:
+    """图表控件使用的单根 K 线数据。"""
+
+    dt: datetime
+    open_price: float
+    high_price: float
+    low_price: float
+    close_price: float
+
+
+@dataclass(frozen=True)
+class ChartMarkerData:
+    """图表上的红绿提醒标记。"""
+
+    dt: datetime
+    price: float
+    direction: str
+    rule_name: str
+    message: str
+
+
+@dataclass(frozen=True)
+class ChartSnapshotData:
+    """GUI 右侧 K 线图所需的一次完整快照。"""
+
+    vt_symbol: str
+    strategy_name: str
+    interval: str
+    data_source: str
+    mode: str
+    bars: tuple[ChartBarData, ...]
+    markers: tuple[ChartMarkerData, ...]
+    reference_time: datetime
 
 
 @dataclass
@@ -1607,6 +1644,7 @@ class SymbolAlertService:
         log_callback: Callable[[LogData], None],
         record_callback: Callable[[RecordData], None],
         state_callback: Callable[[SymbolStateData], None],
+        chart_callback: Callable[[ChartSnapshotData], None],
     ) -> None:
         self.config: SymbolConfig = normalize_symbol_config(config)
         self.app_config: AppConfig = app_config
@@ -1614,6 +1652,7 @@ class SymbolAlertService:
         self.log_callback = log_callback
         self.record_callback = record_callback
         self.state_callback = state_callback
+        self.chart_callback = chart_callback
 
         definition = get_strategy_definition(self.config.strategy_name)
         self.evaluator: BaseAlertEvaluator = definition.evaluator_cls()
@@ -1621,6 +1660,8 @@ class SymbolAlertService:
         self.last_completed_bar_dt: datetime | None = None
         self.stale_logged: bool = False
         self.state: SymbolStateData = build_default_state(self.config)
+        self.chart_enabled: bool = False
+        self.chart_markers: list[ChartMarkerData] = []
 
     def set_data_source(self, source_name: str) -> None:
         """记录当前这只股票本轮实际使用的数据源。"""
@@ -1642,7 +1683,7 @@ class SymbolAlertService:
         """输出带来源的结构化日志。"""
         self.log_callback(make_log(level, self.config.vt_symbol, message))
 
-    def run_once(self, now: datetime, allow_local_fallback: bool = False) -> None:
+    def run_once(self, now: datetime, allow_local_fallback: bool = False, chart_mode: str = "live") -> None:
         """执行单只股票的单轮检查。"""
         if not self.config.enabled:
             self.state.enabled = False
@@ -1691,7 +1732,8 @@ class SymbolAlertService:
         result = self.evaluator.evaluate(self, bars, now)
         self.state.signal_state = result.signal_state
         for alert in result.alerts:
-            self.emit_rule_alert(alert)
+            self.emit_rule_alert(alert, latest_bar.close_price)
+        self.emit_chart_snapshot(bars, chart_mode, now)
         self.emit_state()
 
     def fetch_completed_bars(self, now: datetime, allow_local_fallback: bool = False) -> list[AlertBar]:
@@ -1800,6 +1842,7 @@ class SymbolAlertService:
             bars = [
                 AlertBar(
                     dt=ensure_china_tz(datetime.fromisoformat(str(row[0]))),
+                    open_price=float(row[1]),
                     close_price=float(row[4]),
                     high_price=float(row[2]),
                     low_price=float(row[3]),
@@ -1845,6 +1888,7 @@ class SymbolAlertService:
     def parse_bars(self, df: pd.DataFrame) -> list[AlertBar]:
         """兼容 pytdx、东财等数据源字段名，提取提醒需要的时间、价格和成交量。"""
         time_column = find_first_existing_column(df, ["时间", "datetime", "day"])
+        open_column = find_first_existing_column(df, ["开盘", "open"])
         close_column = find_first_existing_column(df, ["收盘", "close"])
         high_column = find_first_existing_column(df, ["最高", "high"])
         low_column = find_first_existing_column(df, ["最低", "low"])
@@ -1856,6 +1900,7 @@ class SymbolAlertService:
         bars: list[AlertBar] = []
         for _, row in df.iterrows():
             dt = ensure_china_tz(pd.to_datetime(row[time_column]).to_pydatetime())
+            open_price = float(row[open_column]) if open_column else float(row[close_column])
             close_price = float(row[close_column])
             high_price = float(row[high_column]) if high_column else close_price
             low_price = float(row[low_column]) if low_column else close_price
@@ -1863,6 +1908,7 @@ class SymbolAlertService:
             bars.append(
                 AlertBar(
                     dt=dt,
+                    open_price=open_price,
                     close_price=close_price,
                     high_price=high_price,
                     low_price=low_price,
@@ -1879,7 +1925,7 @@ class SymbolAlertService:
             return True
         return (now - state.last_alert_at).total_seconds() >= self.app_config.cooldown_seconds
 
-    def emit_rule_alert(self, signal: AlertSignal) -> None:
+    def emit_rule_alert(self, signal: AlertSignal, marker_price: float) -> None:
         """统一输出提醒并写入本地记录，方便后续复盘。"""
         self.log("INFO", f"{signal.level.value}提醒：{signal.message}")
 
@@ -1897,6 +1943,60 @@ class SymbolAlertService:
         self.history_writer.write(record)
         self.record_callback(record)
         self.state.last_alert_at = datetime.now(CHINA_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        self.append_chart_marker(signal, marker_price)
+
+    def append_chart_marker(self, signal: AlertSignal, marker_price: float) -> None:
+        """把当前会话内的提醒打点到右侧 K 线图。"""
+        if not self.chart_enabled:
+            return
+
+        direction = "buy" if signal.level == AlertLevel.OBSERVE else "sell"
+        marker = ChartMarkerData(
+            dt=signal.triggered_bar_dt,
+            price=marker_price,
+            direction=direction,
+            rule_name=signal.rule_name,
+            message=signal.message,
+        )
+        for existing in self.chart_markers:
+            if (
+                existing.dt == marker.dt
+                and existing.rule_name == marker.rule_name
+                and existing.direction == marker.direction
+            ):
+                return
+
+        self.chart_markers.append(marker)
+        if len(self.chart_markers) > 200:
+            self.chart_markers = self.chart_markers[-200:]
+
+    def emit_chart_snapshot(self, bars: list[AlertBar], mode: str, reference_time: datetime) -> None:
+        """把最近一段 K 线和当前会话标记推给 GUI。"""
+        if not self.chart_enabled or not bars:
+            return
+
+        visible_bars = bars[-120:]
+        start_dt = visible_bars[0].dt
+        snapshot = ChartSnapshotData(
+            vt_symbol=self.config.vt_symbol,
+            strategy_name=self.config.strategy_name,
+            interval=self.app_config.interval,
+            data_source=self.state.data_source,
+            mode=mode,
+            bars=tuple(
+                ChartBarData(
+                    dt=bar.dt,
+                    open_price=bar.open_price,
+                    high_price=bar.high_price,
+                    low_price=bar.low_price,
+                    close_price=bar.close_price,
+                )
+                for bar in visible_bars
+            ),
+            markers=tuple(marker for marker in self.chart_markers if marker.dt >= start_dt),
+            reference_time=reference_time,
+        )
+        self.chart_callback(snapshot)
 
     def set_error(self, message: str) -> None:
         """记录拉数异常，让状态面板能看到最近错误。"""
@@ -1916,12 +2016,14 @@ class AlertCenterRunner:
         status_callback: Callable[[RunnerStatusData], None],
         record_callback: Callable[[RecordData], None],
         state_callback: Callable[[SymbolStateData], None],
+        chart_callback: Callable[[ChartSnapshotData], None],
     ) -> None:
         self.config: AppConfig = config
         self.log_callback = log_callback
         self.status_callback = status_callback
         self.record_callback = record_callback
         self.state_callback = state_callback
+        self.chart_callback = chart_callback
 
         self.paused_logged: bool = False
         self.history_writer = AlertHistoryWriter(config.alert_history_path)
@@ -1933,9 +2035,20 @@ class AlertCenterRunner:
                 log_callback=log_callback,
                 record_callback=record_callback,
                 state_callback=state_callback,
+                chart_callback=chart_callback,
             )
             for symbol_config in config.symbol_configs[:MAX_SYMBOL_COUNT]
         ]
+        self.primary_chart_symbol: str = next(
+            (service.config.vt_symbol for service in self.services if service.config.enabled),
+            "",
+        )
+        for service in self.services:
+            service.chart_enabled = (
+                bool(self.primary_chart_symbol)
+                and service.config.enabled
+                and service.config.vt_symbol == self.primary_chart_symbol
+            )
 
     def get_enabled_services(self) -> list[SymbolAlertService]:
         """仅返回当前启用的股票服务。"""
@@ -2028,6 +2141,10 @@ class AlertCenterRunner:
 
         for service in self.services:
             try:
-                service.run_once(now, allow_local_fallback=allow_local_fallback)
+                service.run_once(
+                    now,
+                    allow_local_fallback=allow_local_fallback,
+                    chart_mode="preview" if ignore_trading_time else "live",
+                )
             except Exception as exc:
                 service.set_error(f"行情数据拉取失败：{exc}")

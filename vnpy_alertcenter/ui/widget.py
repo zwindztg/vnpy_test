@@ -71,6 +71,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         "股票",
         "启用",
         "策略",
+        "数据源",
         "最新K线",
         "最新收盘",
         "信号状态",
@@ -569,6 +570,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
             data.vt_symbol,
             "是" if data.enabled else "否",
             get_strategy_display_name(data.strategy_name),
+            data.data_source,
             data.latest_bar_dt,
             data.latest_close,
             data.signal_state,
@@ -626,8 +628,10 @@ class AlertCenterWidget(QtWidgets.QWidget):
             combo.setCurrentIndex(index)
 
     def build_default_preview_qdatetime(self) -> QtCore.QDateTime:
-        """默认把单次测试时间放在昨天开盘时，方便直接验证历史数据。"""
+        """默认把单次测试时间放在最近一个交易日开盘时，方便直接验证历史数据。"""
         default_dt = datetime.now() - timedelta(days=1)
+        while default_dt.weekday() >= 5:
+            default_dt -= timedelta(days=1)
         default_dt = default_dt.replace(hour=9, minute=30, second=0, microsecond=0)
         return QtCore.QDateTime(default_dt)
 

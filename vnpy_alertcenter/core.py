@@ -48,9 +48,17 @@ DEFAULT_INTERVAL = "5m"
 DEFAULT_POLL_SECONDS = 20
 DEFAULT_ADJUST = "qfq"
 DEFAULT_COOLDOWN_SECONDS = 300
-PYTDX_HOST_TIMEOUT = 2
+PYTDX_HOST_TIMEOUT = 1
 PYTDX_BATCH_SIZE = 800
 PYTDX_DEFAULT_HOST = ("上证云成都电信一", "218.6.170.47", 7709)
+PYTDX_BACKUP_HOSTS: tuple[tuple[str, str, int], ...] = (
+    ("上海电信主站Z1", "180.153.18.170", 7709),
+    ("深圳电信主站Z1", "14.17.75.71", 7709),
+    ("招商证券深圳行情", "119.147.212.81", 7709),
+    ("华泰证券(南京电信)", "221.231.141.60", 7709),
+    ("北京联通主站Z1", "202.108.253.130", 7709),
+    ("杭州电信主站J1", "60.191.117.167", 7709),
+)
 SUPPORTED_INTERVALS: dict[str, int] = {
     "1m": 1,
     "5m": 5,
@@ -182,6 +190,7 @@ class SymbolStateData:
     vt_symbol: str
     enabled: bool
     strategy_name: str
+    data_source: str = "待获取"
     latest_bar_dt: str = ""
     latest_close: str = ""
     signal_state: str = "未触发"
@@ -1018,6 +1027,7 @@ def build_default_state(config: SymbolConfig) -> SymbolStateData:
         vt_symbol=config.vt_symbol,
         enabled=config.enabled,
         strategy_name=config.strategy_name,
+        data_source="待获取" if config.enabled else "-",
         status="已禁用" if not config.enabled else "未启动",
         signal_state="待运行" if config.enabled else "已禁用",
     )
@@ -1168,11 +1178,11 @@ def estimate_pytdx_bar_count(interval: str, start_dt: datetime, end_dt: datetime
 
 
 def iter_pytdx_host_candidates() -> list[tuple[str, str, int]]:
-    """按“已验证节点 -> 默认节点 -> 内置列表”的顺序组织 pytdx 主站。"""
+    """按“已验证节点 -> 默认节点 -> 少量备选”的顺序组织 pytdx 主站。"""
     ordered_hosts: list[tuple[str, str, int]] = []
     seen: set[tuple[str, int]] = set()
 
-    for candidate in (PYTDX_WORKING_HOST, PYTDX_DEFAULT_HOST, *PYTDX_HQ_HOSTS):
+    for candidate in (PYTDX_WORKING_HOST, PYTDX_DEFAULT_HOST, *PYTDX_BACKUP_HOSTS):
         if candidate is None:
             continue
         name, host, port = candidate
@@ -1180,6 +1190,17 @@ def iter_pytdx_host_candidates() -> list[tuple[str, str, int]]:
             continue
         seen.add((host, port))
         ordered_hosts.append((str(name), str(host), int(port)))
+
+    # 如果少量备选都不可用，再补少量 pytdx 内置主站，避免完全丢失兜底能力。
+    if len(ordered_hosts) < 10:
+        for candidate in PYTDX_HQ_HOSTS:
+            name, host, port = candidate
+            if (host, port) in seen:
+                continue
+            seen.add((host, port))
+            ordered_hosts.append((str(name), str(host), int(port)))
+            if len(ordered_hosts) >= 10:
+                break
     return ordered_hosts
 
 
@@ -1189,7 +1210,7 @@ def fetch_pytdx_minute_dataframe(
     interval: str,
     start_dt: datetime,
     end_dt: datetime,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, str]:
     """优先通过 pytdx 获取免费分钟线，减少对东财接口的依赖。"""
     if not PYTDX_AVAILABLE or TdxHq_API is None:
         raise ValueError("pytdx 未安装，无法使用通达信分钟线。")
@@ -1232,7 +1253,8 @@ def fetch_pytdx_minute_dataframe(
             local_start = ensure_china_tz(start_dt).replace(tzinfo=None)
             local_end = ensure_china_tz(end_dt).replace(tzinfo=None)
             df = df.sort_values("datetime").drop_duplicates(subset=["datetime"], keep="last")
-            return df[(df["datetime"] >= local_start) & (df["datetime"] <= local_end)].copy()
+            filtered_df = df[(df["datetime"] >= local_start) & (df["datetime"] <= local_end)].copy()
+            return filtered_df, f"pytdx:{name}"
         except Exception as exc:
             last_error = exc
         finally:
@@ -1491,6 +1513,10 @@ class SymbolAlertService:
         self.stale_logged: bool = False
         self.state: SymbolStateData = build_default_state(self.config)
 
+    def set_data_source(self, source_name: str) -> None:
+        """记录当前这只股票本轮实际使用的数据源。"""
+        self.state.data_source = source_name
+
     def get_rule_state(self, key: str) -> RuleRuntimeState:
         """按名称获取某个规则的运行态。"""
         state = self.rule_states.get(key)
@@ -1513,6 +1539,7 @@ class SymbolAlertService:
             self.state.enabled = False
             self.state.status = "已禁用"
             self.state.signal_state = "已禁用"
+            self.state.data_source = "-"
             self.emit_state()
             return
 
@@ -1546,7 +1573,8 @@ class SymbolAlertService:
         self.log(
             "INFO",
             (
-                f"轮询成功，策略={get_strategy_display_name(self.config.strategy_name)}，"
+                f"轮询成功，数据源={self.state.data_source}，"
+                f"策略={get_strategy_display_name(self.config.strategy_name)}，"
                 f"K线时间={self.state.latest_bar_dt}，最新收盘价={self.state.latest_close}。"
             ),
         )
@@ -1569,7 +1597,7 @@ class SymbolAlertService:
 
         try:
             # 分钟线优先走 pytdx，免费且在当前机器上比东财接口更稳定。
-            df = fetch_pytdx_minute_dataframe(
+            df, source_name = fetch_pytdx_minute_dataframe(
                 symbol=symbol,
                 exchange=exchange,
                 interval=self.app_config.interval,
@@ -1577,6 +1605,7 @@ class SymbolAlertService:
                 end_dt=end_dt,
             )
             parsed = self.parse_bars(df)
+            self.set_data_source(source_name)
             return filter_completed_bars(
                 parsed,
                 now,
@@ -1596,6 +1625,7 @@ class SymbolAlertService:
                     start_dt=start_dt,
                     end_dt=end_dt,
                 )
+            self.set_data_source("东财分钟线")
         except Exception as exc:
             if last_remote_error is not None:
                 exc = ValueError(f"pytdx 失败：{last_remote_error}；东财失败：{exc}")
@@ -1604,6 +1634,7 @@ class SymbolAlertService:
 
             local_bars, local_interval = self.fetch_local_database_bars(now)
             if local_bars:
+                self.set_data_source(f"本地{local_interval}")
                 self.log(
                     "INFO",
                     (
@@ -1611,9 +1642,12 @@ class SymbolAlertService:
                     ),
                 )
                 return local_bars
+            self.set_data_source("远程失败")
             raise ValueError(f"{exc}；同时本地数据库中也没有可用历史数据。") from exc
 
         if df is None or df.empty:
+            if not self.state.data_source:
+                self.set_data_source("无数据")
             return []
 
         parsed = self.parse_bars(df)

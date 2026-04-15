@@ -1,0 +1,337 @@
+<svg width="1728" height="1117" viewBox="0 0 1728 1117" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bgGrad" x1="170" y1="84" x2="1560" y2="1036" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#08111C"/>
+      <stop offset="0.55" stop-color="#0B1727"/>
+      <stop offset="1" stop-color="#08111A"/>
+    </linearGradient>
+    <radialGradient id="haloLeft" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(294 244) rotate(33.7) scale(532 395)">
+      <stop stop-color="#1D4ED8" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#1D4ED8" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="haloRight" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(1414 829) rotate(180) scale(616 410)">
+      <stop stop-color="#10B981" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#10B981" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="appGrad" x1="132" y1="98" x2="1610" y2="1022" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0D1826"/>
+      <stop offset="1" stop-color="#0A1521"/>
+    </linearGradient>
+    <linearGradient id="panelGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#152231"/>
+      <stop offset="1" stop-color="#101A27"/>
+    </linearGradient>
+    <linearGradient id="panelGradSoft" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#182838"/>
+      <stop offset="1" stop-color="#101A27"/>
+    </linearGradient>
+    <linearGradient id="bluePill" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#1D4ED8"/>
+    </linearGradient>
+    <linearGradient id="greenPill" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#16A34A"/>
+      <stop offset="1" stop-color="#15803D"/>
+    </linearGradient>
+    <linearGradient id="amberPill" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#F59E0B"/>
+      <stop offset="1" stop-color="#D97706"/>
+    </linearGradient>
+    <filter id="appShadow" x="68" y="44" width="1592" height="1008" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="18"/>
+      <feGaussianBlur stdDeviation="22"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.0157 0 0 0 0 0.0471 0 0 0 0 0.0902 0 0 0 0.52 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_1"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_1" result="shape"/>
+    </filter>
+    <filter id="softShadow" x="-20" y="-20" width="340" height="200" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="10"/>
+      <feGaussianBlur stdDeviation="12"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.0157 0 0 0 0 0.0471 0 0 0 0 0.0902 0 0 0 0.28 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_1"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_1" result="shape"/>
+    </filter>
+    <clipPath id="chartClip">
+      <rect x="1010" y="234" width="538" height="352" rx="18"/>
+    </clipPath>
+  </defs>
+
+  <rect width="1728" height="1117" fill="url(#bgGrad)"/>
+  <rect width="1728" height="1117" fill="url(#haloLeft)"/>
+  <rect width="1728" height="1117" fill="url(#haloRight)"/>
+
+  <g opacity="0.08">
+    <path d="M76 1092H1652" stroke="#94A3B8"/>
+    <path d="M76 1042H1652" stroke="#94A3B8"/>
+    <path d="M76 992H1652" stroke="#94A3B8"/>
+    <path d="M76 942H1652" stroke="#94A3B8"/>
+    <path d="M76 892H1652" stroke="#94A3B8"/>
+    <path d="M76 842H1652" stroke="#94A3B8"/>
+    <path d="M76 792H1652" stroke="#94A3B8"/>
+    <path d="M76 742H1652" stroke="#94A3B8"/>
+    <path d="M76 692H1652" stroke="#94A3B8"/>
+    <path d="M76 642H1652" stroke="#94A3B8"/>
+    <path d="M76 592H1652" stroke="#94A3B8"/>
+    <path d="M76 542H1652" stroke="#94A3B8"/>
+    <path d="M76 492H1652" stroke="#94A3B8"/>
+    <path d="M76 442H1652" stroke="#94A3B8"/>
+    <path d="M76 392H1652" stroke="#94A3B8"/>
+    <path d="M76 342H1652" stroke="#94A3B8"/>
+    <path d="M76 292H1652" stroke="#94A3B8"/>
+    <path d="M76 242H1652" stroke="#94A3B8"/>
+    <path d="M76 192H1652" stroke="#94A3B8"/>
+    <path d="M76 142H1652" stroke="#94A3B8"/>
+  </g>
+
+  <g filter="url(#appShadow)">
+    <rect x="92" y="64" width="1544" height="972" rx="30" fill="url(#appGrad)" stroke="#253446"/>
+  </g>
+
+  <rect x="92" y="64" width="1544" height="74" rx="30" fill="#0E1A28"/>
+  <path d="M92 108H1636" stroke="#223243"/>
+  <circle cx="134" cy="101" r="7" fill="#FF5F57"/>
+  <circle cx="158" cy="101" r="7" fill="#FEBB2E"/>
+  <circle cx="182" cy="101" r="7" fill="#28C840"/>
+  <text x="216" y="97" fill="#E2E8F0" font-size="24" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">实时提醒中心</text>
+  <text x="216" y="121" fill="#7C93AD" font-size="12" font-weight="500" font-family="SF Pro Display, PingFang SC, sans-serif">vn.py A-Share Alert Center · High Fidelity Preview V1</text>
+  <rect x="1374" y="83" width="112" height="34" rx="17" fill="#132334" stroke="#284055"/>
+  <text x="1430" y="105" fill="#9CC2FF" font-size="13" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">实时运行</text>
+  <rect x="1498" y="83" width="108" height="34" rx="17" fill="#10281C" stroke="#244A35"/>
+  <text x="1552" y="105" fill="#82E1A8" font-size="13" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">2 / 3 已启用</text>
+
+  <rect x="118" y="162" width="426" height="846" rx="24" fill="#0F1B28" stroke="#203244"/>
+  <rect x="568" y="162" width="1042" height="846" rx="24" fill="#0D1824" stroke="#203244"/>
+
+  <g filter="url(#softShadow)">
+    <rect x="134" y="182" width="394" height="72" rx="20" fill="url(#panelGradSoft)" stroke="#27394B"/>
+  </g>
+  <text x="160" y="208" fill="#7EA6FF" font-size="12" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">CONTROL BAR</text>
+  <text x="160" y="233" fill="#E2E8F0" font-size="22" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">一屏完成配置、测试与监控</text>
+  <text x="160" y="252" fill="#94A3B8" font-size="13" font-weight="500" font-family="SF Pro Display, PingFang SC, sans-serif">把学习策略、图表验证、提醒记录和运行日志放在同一工作面板里。</text>
+
+  <rect x="134" y="276" width="394" height="196" rx="20" fill="url(#panelGrad)" stroke="#26384A"/>
+  <text x="160" y="308" fill="#E2E8F0" font-size="18" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">全局设置</text>
+  <text x="160" y="330" fill="#7B8EA5" font-size="12" font-weight="500" font-family="SF Pro Display, PingFang SC, sans-serif">Global Configuration</text>
+  <text x="160" y="369" fill="#9FB3C8" font-size="13" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">提醒周期</text>
+  <rect x="260" y="348" width="240" height="34" rx="10" fill="#0C1520" stroke="#314659"/>
+  <text x="282" y="370" fill="#E2E8F0" font-size="13" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">5m</text>
+  <text x="160" y="411" fill="#9FB3C8" font-size="13" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">轮询间隔</text>
+  <rect x="260" y="390" width="240" height="34" rx="10" fill="#0C1520" stroke="#314659"/>
+  <text x="282" y="412" fill="#E2E8F0" font-size="13" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">20 秒</text>
+  <text x="160" y="453" fill="#9FB3C8" font-size="13" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">冷却时间</text>
+  <rect x="260" y="432" width="240" height="34" rx="10" fill="#0C1520" stroke="#314659"/>
+  <text x="282" y="454" fill="#E2E8F0" font-size="13" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">300 秒</text>
+  <text x="160" y="495" fill="#9FB3C8" font-size="13" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">复权方式</text>
+  <rect x="260" y="474" width="240" height="34" rx="10" fill="#0C1520" stroke="#314659"/>
+  <text x="282" y="496" fill="#E2E8F0" font-size="13" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">前复权 qfq</text>
+  <rect x="160" y="518" width="16" height="16" rx="4" fill="#2563EB"/>
+  <path d="M164 526L168 530L174 522" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="184" y="531" fill="#D6E2F0" font-size="13" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">启用桌面通知</text>
+
+  <rect x="134" y="494" width="394" height="318" rx="20" fill="url(#panelGrad)" stroke="#26384A"/>
+  <text x="160" y="526" fill="#E2E8F0" font-size="18" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">股票配置</text>
+  <text x="160" y="548" fill="#7B8EA5" font-size="12" font-weight="500" font-family="SF Pro Display, PingFang SC, sans-serif">最多 3 只股票，支持不同策略与参数</text>
+
+  <rect x="160" y="568" width="342" height="62" rx="14" fill="#0C1520" stroke="#2C4155"/>
+  <circle cx="182" cy="599" r="9" fill="#1D4ED8"/>
+  <path d="M178 599L181 602L187 596" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="208" y="588" fill="#E2E8F0" font-size="15" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">601869.SSE</text>
+  <text x="208" y="609" fill="#8FB3FF" font-size="12" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">基础提醒策略 · 突破 25.38 / 止损 24.12</text>
+  <rect x="420" y="585" width="64" height="24" rx="12" fill="url(#greenPill)"/>
+  <text x="452" y="601" fill="white" font-size="11" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">启用</text>
+
+  <rect x="160" y="642" width="342" height="62" rx="14" fill="#0C1520" stroke="#2C4155"/>
+  <circle cx="182" cy="673" r="9" fill="#1D4ED8"/>
+  <path d="M178 673L181 676L187 670" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="208" y="662" fill="#E2E8F0" font-size="15" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">600000.SSE</text>
+  <text x="208" y="683" fill="#8FB3FF" font-size="12" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">A股长仓学习策略 · 快 5 / 慢 20 / 100 股</text>
+  <rect x="420" y="659" width="64" height="24" rx="12" fill="url(#greenPill)"/>
+  <text x="452" y="675" fill="white" font-size="11" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">启用</text>
+
+  <rect x="160" y="716" width="342" height="62" rx="14" fill="#0C1520" stroke="#2C4155"/>
+  <circle cx="182" cy="747" r="9" fill="#334155"/>
+  <text x="208" y="736" fill="#E2E8F0" font-size="15" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">000001.SZSE</text>
+  <text x="208" y="757" fill="#7B8EA5" font-size="12" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">A股短线放量突破策略 · 暂未启用</text>
+  <rect x="420" y="733" width="64" height="24" rx="12" fill="#243447"/>
+  <text x="452" y="749" fill="#9DB1C7" font-size="11" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">待命</text>
+
+  <rect x="134" y="834" width="394" height="154" rx="20" fill="url(#panelGrad)" stroke="#26384A"/>
+  <text x="160" y="866" fill="#E2E8F0" font-size="18" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">运行信息</text>
+  <text x="160" y="906" fill="#A9BED2" font-size="13" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">配置文件</text>
+  <text x="160" y="928" fill="#7C93AD" font-size="12" font-weight="500" font-family="SF Pro Display, PingFang SC, sans-serif">config/akshare_realtime_alert.json</text>
+  <text x="160" y="958" fill="#A9BED2" font-size="13" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">记录文件</text>
+  <text x="160" y="980" fill="#7C93AD" font-size="12" font-weight="500" font-family="SF Pro Display, PingFang SC, sans-serif">logs/akshare_realtime_alerts.csv</text>
+  <rect x="390" y="884" width="110" height="36" rx="12" fill="#10281C" stroke="#244A35"/>
+  <text x="445" y="907" fill="#82E1A8" font-size="13" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">线程运行中</text>
+
+  <rect x="592" y="182" width="994" height="84" rx="20" fill="url(#panelGradSoft)" stroke="#283B4F"/>
+  <rect x="618" y="205" width="90" height="38" rx="12" fill="#0E1823" stroke="#355066"/>
+  <text x="663" y="229" fill="#D7E4F3" font-size="14" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">加载配置</text>
+  <rect x="720" y="205" width="90" height="38" rx="12" fill="#0E1823" stroke="#355066"/>
+  <text x="765" y="229" fill="#D7E4F3" font-size="14" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">保存配置</text>
+  <rect x="822" y="205" width="90" height="38" rx="12" fill="url(#bluePill)"/>
+  <text x="867" y="229" fill="white" font-size="14" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">单次测试</text>
+  <rect x="924" y="205" width="90" height="38" rx="12" fill="url(#greenPill)"/>
+  <text x="969" y="229" fill="white" font-size="14" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">启动提醒</text>
+  <rect x="1026" y="205" width="90" height="38" rx="12" fill="#1A2531" stroke="#314659"/>
+  <text x="1071" y="229" fill="#AFC1D4" font-size="14" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">停止提醒</text>
+  <text x="1210" y="214" fill="#7B8EA5" font-size="12" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">当前模式</text>
+  <rect x="1208" y="220" width="116" height="28" rx="14" fill="#11243A" stroke="#28508E"/>
+  <text x="1266" y="238" fill="#9CC2FF" font-size="12" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">实时运行</text>
+  <text x="1360" y="214" fill="#7B8EA5" font-size="12" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">整体状态</text>
+  <rect x="1358" y="220" width="198" height="28" rx="14" fill="#112A1B" stroke="#27553B"/>
+  <text x="1457" y="238" fill="#82E1A8" font-size="12" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">监控中 · 轮询每 20 秒</text>
+
+  <rect x="592" y="288" width="384" height="334" rx="22" fill="url(#panelGrad)" stroke="#27394B"/>
+  <text x="620" y="322" fill="#E2E8F0" font-size="18" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">策略状态</text>
+  <text x="620" y="344" fill="#7B8EA5" font-size="12" font-weight="500" font-family="SF Pro Display, PingFang SC, sans-serif">State Board</text>
+  <rect x="620" y="366" width="328" height="34" rx="10" fill="#0C1520"/>
+  <text x="638" y="388" fill="#8EA5BC" font-size="11" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">股票</text>
+  <text x="744" y="388" fill="#8EA5BC" font-size="11" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">策略</text>
+  <text x="874" y="388" fill="#8EA5BC" font-size="11" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">状态</text>
+  <text x="918" y="388" fill="#8EA5BC" font-size="11" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">最近提醒</text>
+
+  <rect x="620" y="410" width="328" height="56" rx="14" fill="#101C29" stroke="#203244"/>
+  <text x="638" y="432" fill="#E2E8F0" font-size="14" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">601869.SSE</text>
+  <text x="638" y="451" fill="#7EA6FF" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">基础提醒</text>
+  <rect x="808" y="423" width="56" height="22" rx="11" fill="url(#greenPill)"/>
+  <text x="836" y="438" fill="white" font-size="10" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">观察中</text>
+  <text x="888" y="439" fill="#BFD1E3" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">14:55 观察型</text>
+
+  <rect x="620" y="476" width="328" height="56" rx="14" fill="#101C29" stroke="#203244"/>
+  <text x="638" y="498" fill="#E2E8F0" font-size="14" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">600000.SSE</text>
+  <text x="638" y="517" fill="#7EA6FF" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">长仓学习策略</text>
+  <rect x="808" y="489" width="56" height="22" rx="11" fill="url(#amberPill)"/>
+  <text x="836" y="504" fill="white" font-size="10" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">风控中</text>
+  <text x="888" y="505" fill="#BFD1E3" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">14:52 止盈提示</text>
+
+  <rect x="620" y="542" width="328" height="56" rx="14" fill="#101C29" stroke="#203244"/>
+  <text x="638" y="564" fill="#E2E8F0" font-size="14" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">000001.SZSE</text>
+  <text x="638" y="583" fill="#7B8EA5" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">放量突破策略</text>
+  <rect x="808" y="555" width="56" height="22" rx="11" fill="#233446"/>
+  <text x="836" y="570" fill="#9DB1C7" font-size="10" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">未启用</text>
+  <text x="888" y="571" fill="#7B8EA5" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">等待启动</text>
+
+  <rect x="592" y="644" width="384" height="340" rx="22" fill="url(#panelGrad)" stroke="#27394B"/>
+  <text x="620" y="678" fill="#E2E8F0" font-size="18" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">提醒记录</text>
+  <text x="620" y="700" fill="#7B8EA5" font-size="12" font-weight="500" font-family="SF Pro Display, PingFang SC, sans-serif">Recent Alerts</text>
+
+  <rect x="620" y="722" width="328" height="58" rx="14" fill="#101C29" stroke="#203244"/>
+  <rect x="636" y="738" width="58" height="22" rx="11" fill="url(#greenPill)"/>
+  <text x="665" y="753" fill="white" font-size="10" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">观察型</text>
+  <text x="712" y="742" fill="#E2E8F0" font-size="13" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">601869.SSE 突破提醒</text>
+  <text x="712" y="761" fill="#8EA5BC" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">价格上穿 25.38 · 2026-04-15 14:55</text>
+
+  <rect x="620" y="792" width="328" height="58" rx="14" fill="#101C29" stroke="#203244"/>
+  <rect x="636" y="808" width="58" height="22" rx="11" fill="url(#amberPill)"/>
+  <text x="665" y="823" fill="white" font-size="10" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">风控型</text>
+  <text x="712" y="812" fill="#E2E8F0" font-size="13" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">600000.SSE 收益回撤提醒</text>
+  <text x="712" y="831" fill="#8EA5BC" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">均线转弱，建议观察减仓 · 14:52</text>
+
+  <rect x="620" y="862" width="328" height="58" rx="14" fill="#101C29" stroke="#203244"/>
+  <rect x="636" y="878" width="58" height="22" rx="11" fill="#243447"/>
+  <text x="665" y="893" fill="#C7D3DF" font-size="10" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">系统</text>
+  <text x="712" y="882" fill="#E2E8F0" font-size="13" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">单次测试完成</text>
+  <text x="712" y="901" fill="#8EA5BC" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">历史回放 48 根 K 线，2 条有效提醒</text>
+
+  <rect x="994" y="288" width="568" height="420" rx="22" fill="url(#panelGrad)" stroke="#27394B"/>
+  <text x="1022" y="322" fill="#E2E8F0" font-size="18" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">K 线图</text>
+  <text x="1022" y="344" fill="#7B8EA5" font-size="12" font-weight="500" font-family="SF Pro Display, PingFang SC, sans-serif">601869.SSE · 基础提醒策略 · 5m · 实时运行</text>
+  <rect x="1022" y="360" width="514" height="34" rx="12" fill="#0C1520" stroke="#24384A"/>
+  <text x="1042" y="382" fill="#7EA6FF" font-size="12" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">数据源 PyTDX</text>
+  <text x="1166" y="382" fill="#82E1A8" font-size="12" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">观察型提醒 1</text>
+  <text x="1292" y="382" fill="#FDBA74" font-size="12" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">风控型提醒 1</text>
+  <text x="1420" y="382" fill="#94A3B8" font-size="12" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">最新 K 线 14:55</text>
+
+  <rect x="1010" y="234" width="538" height="352" rx="18" fill="#0A121C" opacity="0"/>
+  <g clip-path="url(#chartClip)">
+    <rect x="1022" y="414" width="514" height="252" rx="18" fill="#0A121C"/>
+    <path d="M1022 456H1536" stroke="#213142" stroke-dasharray="5 7"/>
+    <path d="M1022 506H1536" stroke="#213142" stroke-dasharray="5 7"/>
+    <path d="M1022 556H1536" stroke="#213142" stroke-dasharray="5 7"/>
+    <path d="M1022 606H1536" stroke="#213142" stroke-dasharray="5 7"/>
+    <path d="M1068 645V430" stroke="#182635"/>
+    <path d="M1136 645V430" stroke="#182635"/>
+    <path d="M1204 645V430" stroke="#182635"/>
+    <path d="M1272 645V430" stroke="#182635"/>
+    <path d="M1340 645V430" stroke="#182635"/>
+    <path d="M1408 645V430" stroke="#182635"/>
+    <path d="M1476 645V430" stroke="#182635"/>
+
+    <path d="M1048 535L1084 520L1120 542L1156 488L1192 504L1228 458L1264 476L1300 438L1336 448L1372 472L1408 430L1444 446L1480 418L1516 434" stroke="#60A5FA" stroke-width="2.5" fill="none"/>
+    <path d="M1048 554L1084 548L1120 562L1156 530L1192 524L1228 505L1264 514L1300 486L1336 494L1372 506L1408 478L1444 487L1480 470L1516 476" stroke="#F59E0B" stroke-width="2.5" fill="none" opacity="0.9"/>
+
+    <path d="M1057 584V548" stroke="#94A3B8" stroke-width="2"/>
+    <rect x="1048" y="562" width="18" height="16" fill="#EF4444"/>
+    <path d="M1093 572V528" stroke="#94A3B8" stroke-width="2"/>
+    <rect x="1084" y="536" width="18" height="22" fill="#16A34A"/>
+    <path d="M1129 594V550" stroke="#94A3B8" stroke-width="2"/>
+    <rect x="1120" y="562" width="18" height="26" fill="#EF4444"/>
+    <path d="M1165 544V496" stroke="#94A3B8" stroke-width="2"/>
+    <rect x="1156" y="508" width="18" height="24" fill="#16A34A"/>
+    <path d="M1201 556V510" stroke="#94A3B8" stroke-width="2"/>
+    <rect x="1192" y="522" width="18" height="20" fill="#16A34A"/>
+    <path d="M1237 522V470" stroke="#94A3B8" stroke-width="2"/>
+    <rect x="1228" y="482" width="18" height="28" fill="#16A34A"/>
+    <path d="M1273 534V486" stroke="#94A3B8" stroke-width="2"/>
+    <rect x="1264" y="498" width="18" height="22" fill="#EF4444"/>
+    <path d="M1309 500V450" stroke="#94A3B8" stroke-width="2"/>
+    <rect x="1300" y="462" width="18" height="24" fill="#16A34A"/>
+    <path d="M1345 514V468" stroke="#94A3B8" stroke-width="2"/>
+    <rect x="1336" y="478" width="18" height="18" fill="#EF4444"/>
+    <path d="M1381 530V486" stroke="#94A3B8" stroke-width="2"/>
+    <rect x="1372" y="494" width="18" height="20" fill="#EF4444"/>
+    <path d="M1417 486V436" stroke="#94A3B8" stroke-width="2"/>
+    <rect x="1408" y="448" width="18" height="30" fill="#16A34A"/>
+    <path d="M1453 500V454" stroke="#94A3B8" stroke-width="2"/>
+    <rect x="1444" y="466" width="18" height="22" fill="#EF4444"/>
+    <path d="M1489 476V426" stroke="#94A3B8" stroke-width="2"/>
+    <rect x="1480" y="438" width="18" height="28" fill="#16A34A"/>
+    <path d="M1525 486V438" stroke="#94A3B8" stroke-width="2"/>
+    <rect x="1516" y="450" width="18" height="24" fill="#16A34A"/>
+
+    <circle cx="1489" cy="426" r="9" fill="#22C55E"/>
+    <path d="M1489 414L1498 430H1480L1489 414Z" fill="#22C55E"/>
+    <circle cx="1417" cy="436" r="9" fill="#F59E0B"/>
+    <path d="M1417 449L1408 433H1426L1417 449Z" fill="#F59E0B"/>
+  </g>
+
+  <text x="1026" y="448" fill="#94A3B8" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">26.10</text>
+  <text x="1026" y="498" fill="#94A3B8" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">25.80</text>
+  <text x="1026" y="548" fill="#94A3B8" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">25.50</text>
+  <text x="1026" y="598" fill="#94A3B8" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">25.20</text>
+  <text x="1068" y="690" fill="#7B8EA5" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">13:50</text>
+  <text x="1202" y="690" fill="#7B8EA5" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">14:10</text>
+  <text x="1338" y="690" fill="#7B8EA5" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">14:30</text>
+  <text x="1474" y="690" fill="#7B8EA5" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">14:55</text>
+
+  <rect x="994" y="730" width="568" height="254" rx="22" fill="url(#panelGrad)" stroke="#27394B"/>
+  <text x="1022" y="764" fill="#E2E8F0" font-size="18" font-weight="700" font-family="SF Pro Display, PingFang SC, sans-serif">运行日志</text>
+  <text x="1022" y="786" fill="#7B8EA5" font-size="12" font-weight="500" font-family="SF Pro Display, PingFang SC, sans-serif">Execution Log</text>
+
+  <rect x="1022" y="806" width="514" height="48" rx="14" fill="#0C1520" stroke="#223243"/>
+  <rect x="1038" y="819" width="42" height="22" rx="11" fill="#11243A"/>
+  <text x="1059" y="834" fill="#9CC2FF" font-size="10" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">测试</text>
+  <text x="1092" y="825" fill="#94A3B8" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">2026-04-15 14:48:02</text>
+  <text x="1092" y="842" fill="#D8E4F2" font-size="12" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">历史回放完成，共处理 48 根 K 线，命中 2 条提醒。</text>
+
+  <rect x="1022" y="862" width="514" height="48" rx="14" fill="#0C1520" stroke="#223243"/>
+  <rect x="1038" y="875" width="42" height="22" rx="11" fill="#10281C"/>
+  <text x="1059" y="890" fill="#82E1A8" font-size="10" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">提醒</text>
+  <text x="1092" y="881" fill="#94A3B8" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">2026-04-15 14:55:01</text>
+  <text x="1092" y="898" fill="#D8E4F2" font-size="12" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">601869.SSE 上穿突破价 25.38，生成观察型提醒。</text>
+
+  <rect x="1022" y="918" width="514" height="48" rx="14" fill="#0C1520" stroke="#223243"/>
+  <rect x="1038" y="931" width="42" height="22" rx="11" fill="#2D1E07"/>
+  <text x="1059" y="946" fill="#FDBA74" font-size="10" font-weight="700" text-anchor="middle" font-family="SF Pro Display, PingFang SC, sans-serif">风控</text>
+  <text x="1092" y="937" fill="#94A3B8" font-size="11" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">2026-04-15 14:52:18</text>
+  <text x="1092" y="954" fill="#D8E4F2" font-size="12" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">600000.SSE 均线转弱，触发风险提示，建议观察减仓。</text>
+
+  <text x="120" y="1068" fill="#62788F" font-size="12" font-weight="600" font-family="SF Pro Display, PingFang SC, sans-serif">Preview Intent: desktop vn.py learning workflow / A-share alerting / dark professional terminal / operational clarity first</text>
+</svg>

@@ -291,9 +291,9 @@ class AlertChartWidget(QtWidgets.QWidget):
         painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing)
 
         outer_rect = self.rect().adjusted(1, 1, -1, -1)
-        painter.fillRect(outer_rect, QtGui.QColor("#16212b"))
-        painter.setPen(QtGui.QPen(QtGui.QColor("#334155"), 1))
-        painter.drawRoundedRect(QtCore.QRectF(outer_rect), 8, 8)
+        painter.fillRect(outer_rect, QtGui.QColor("#0b1622"))
+        painter.setPen(QtGui.QPen(QtGui.QColor("#2a4157"), 1))
+        painter.drawRoundedRect(QtCore.QRectF(outer_rect), 12, 12)
 
         visible_bars = list(self.get_visible_bars())
         if not self.snapshot or not visible_bars:
@@ -316,7 +316,7 @@ class AlertChartWidget(QtWidgets.QWidget):
 
     def draw_placeholder(self, painter: QtGui.QPainter, rect: QtCore.QRect) -> None:
         """在空态时显示提示文本。"""
-        painter.setPen(QtGui.QColor("#94a3b8"))
+        painter.setPen(QtGui.QColor("#8ea2b8"))
         font = painter.font()
         font.setPointSize(12)
         font.setBold(True)
@@ -334,7 +334,7 @@ class AlertChartWidget(QtWidgets.QWidget):
             f"{self.snapshot.data_source}  |  "
             f"{mode_text}"
         )
-        painter.setPen(QtGui.QColor("#e2e8f0"))
+        painter.setPen(QtGui.QColor("#e5edf7"))
         font = painter.font()
         font.setPointSize(10)
         font.setBold(True)
@@ -435,8 +435,8 @@ class AlertChartWidget(QtWidgets.QWidget):
         max_price: float,
     ) -> None:
         """绘制背景网格和价格标签，帮助快速定位区间。"""
-        grid_pen = QtGui.QPen(QtGui.QColor("#223041"), 1, QtCore.Qt.PenStyle.DashLine)
-        text_pen = QtGui.QPen(QtGui.QColor("#94a3b8"), 1)
+        grid_pen = QtGui.QPen(QtGui.QColor("#1a2a3a"), 1, QtCore.Qt.PenStyle.DashLine)
+        text_pen = QtGui.QPen(QtGui.QColor("#8ea2b8"), 1)
         font = painter.font()
         font.setPointSize(9)
         painter.setFont(font)
@@ -466,8 +466,8 @@ class AlertChartWidget(QtWidgets.QWidget):
             return
 
         baseline_y = rect.top() + 6
-        axis_pen = QtGui.QPen(QtGui.QColor("#334155"), 1)
-        text_pen = QtGui.QPen(QtGui.QColor("#94a3b8"), 1)
+        axis_pen = QtGui.QPen(QtGui.QColor("#334a60"), 1)
+        text_pen = QtGui.QPen(QtGui.QColor("#8ea2b8"), 1)
         font = painter.font()
         font.setPointSize(8)
         painter.setFont(font)

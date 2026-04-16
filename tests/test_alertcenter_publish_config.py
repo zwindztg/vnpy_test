@@ -114,8 +114,10 @@ class PublishSymbolConfigTest(unittest.TestCase):
         )
 
         self.assertEqual(2, len(published.symbol_configs))
+        self.assertFalse(published.symbol_configs[0].enabled)
         self.assertEqual("601869.SSE", published.symbol_configs[1].vt_symbol)
         self.assertEqual("LessonDonchianAShareStrategy", published.symbol_configs[1].strategy_name)
+        self.assertTrue(published.symbol_configs[1].enabled)
 
     def test_parse_symbol_configs_keeps_same_symbol_candidates(self) -> None:
         configs = parse_symbol_configs(
@@ -192,6 +194,40 @@ class PublishSymbolConfigTest(unittest.TestCase):
         self.assertEqual(first.source_state, updated.symbol_configs[0].source_state)
         self.assertEqual(first.config_id, updated.symbol_configs[0].config_id)
         self.assertEqual(second, updated.symbol_configs[1])
+
+    def test_update_symbol_enabled_state_disables_other_enabled_candidates_of_same_symbol(self) -> None:
+        first = SymbolConfig(
+            vt_symbol="601869.SSE",
+            strategy_name="LessonAShareLongOnlyStrategy",
+            params={"fast_window": 5, "slow_window": 20},
+            enabled=True,
+            source_state=SOURCE_MANUAL,
+            config_id="cfg-1",
+        )
+        second = SymbolConfig(
+            vt_symbol="601869.SSE",
+            strategy_name="LessonDonchianAShareStrategy",
+            params={"entry_window": 20, "exit_window": 10},
+            enabled=False,
+            source_state=SOURCE_CTA_PUBLISHED,
+            config_id="cfg-2",
+        )
+        third = SymbolConfig(
+            vt_symbol="600000.SSE",
+            strategy_name="LessonDonchianAShareStrategy",
+            params={"entry_window": 20, "exit_window": 10},
+            enabled=True,
+            source_state=SOURCE_MANUAL,
+            config_id="cfg-3",
+        )
+        config = self.make_config(first, second, third)
+
+        updated = update_symbol_enabled_state(config, config_id="cfg-2", enabled=True)
+
+        self.assertFalse(updated.symbol_configs[0].enabled)
+        self.assertTrue(updated.symbol_configs[1].enabled)
+        self.assertEqual(first.vt_symbol, updated.symbol_configs[1].vt_symbol)
+        self.assertEqual(third, updated.symbol_configs[2])
 
 
 if __name__ == "__main__":

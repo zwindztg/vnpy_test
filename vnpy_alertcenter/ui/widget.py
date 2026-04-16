@@ -474,7 +474,9 @@ class AlertCenterWidget(QtWidgets.QWidget):
         eyebrow.setProperty("textRole", "eyebrow")
         title = QtWidgets.QLabel("一屏完成配置、测试与监控")
         title.setProperty("textRole", "heroTitle")
-        subtitle = QtWidgets.QLabel("保留完整配置、状态表和信号记录，把 CTA 实时监控工作流集中在当前页面。")
+        subtitle = QtWidgets.QLabel(
+            "保留完整配置、状态表和信号记录；实时监控只使用 pytdx，本地 sqlite 仅用于单次测试。"
+        )
         subtitle.setProperty("textRole", "heroSubtitle")
         subtitle.setWordWrap(True)
 
@@ -725,7 +727,11 @@ class AlertCenterWidget(QtWidgets.QWidget):
             self.apply_strategy_to_row(row_widgets, BASIC_ALERT_STRATEGY)
 
         body.setLayout(grid)
-        return self.create_card_panel("股票配置（最多 3 只）", "最多 3 只股票，支持不同策略与参数", body)
+        return self.create_card_panel(
+            "股票配置（最多 3 只）",
+            "最多 3 只股票；同股票可保留多个候选，但同一时刻只能启用 1 条",
+            body,
+        )
 
     def create_runtime_group(self) -> QtWidgets.QWidget:
         """创建运行信息卡片。"""
@@ -753,7 +759,11 @@ class AlertCenterWidget(QtWidgets.QWidget):
         grid.addWidget(self.create_setting_field("线程状态", self.thread_label), 0, 2)
 
         body.setLayout(grid)
-        return self.create_card_panel("运行信息", "Runtime information", body)
+        return self.create_card_panel(
+            "运行信息",
+            "实时模式只走 pytdx；本地 sqlite 仅用于单次测试/离线验证",
+            body,
+        )
 
     def create_main_splitter(self) -> QtWidgets.QSplitter:
         """创建只保留两列的主布局。"""
@@ -1115,8 +1125,25 @@ class AlertCenterWidget(QtWidgets.QWidget):
             return
 
         self.current_config = updated_config
+        self.apply_enabled_state_changes(updated_config)
+        if not self.alert_engine.is_running():
+            self.populate_state_placeholders(updated_config)
+            self.refresh_chart_placeholder(updated_config)
         # 只落盘启用状态，不广播整份配置刷新，避免把用户尚未保存的其他表单改动覆盖掉。
         self.alert_engine.save_config(updated_config, message="", broadcast=False)
+        self.refresh_summary_metrics()
+
+    def apply_enabled_state_changes(self, config: AppConfig) -> None:
+        """把启用状态同步回表单勾选框，确保同股票候选互斥时界面立即刷新。"""
+        enabled_map = {symbol.config_id: symbol.enabled for symbol in config.symbol_configs[:MAX_SYMBOL_COUNT]}
+        self.source_tracking_suspended = True
+        try:
+            for row_widgets in self.row_widgets:
+                if not row_widgets.config_id or row_widgets.config_id not in enabled_map:
+                    continue
+                row_widgets.enabled.setChecked(enabled_map[row_widgets.config_id])
+        finally:
+            self.source_tracking_suspended = False
 
     def refresh_basic_price_defaults(self, row_widgets: SymbolRowWidgets) -> None:
         """把基础提醒策略的突破价/止损价更新为最近交易日开盘价的正负 2%。"""

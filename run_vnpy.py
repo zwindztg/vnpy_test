@@ -692,7 +692,7 @@ def patch_backtester_manager() -> None:
     from vnpy.trader.constant import Exchange
     from vnpy.trader.database import DB_TZ
     from vnpy.trader.ui import QtCore, QtWidgets
-    from vnpy_alertcenter import AlertCenterApp
+    from vnpy_alertcenter.app import AlertCenterApp
     from vnpy_alertcenter.core import MAX_SYMBOL_COUNT, get_strategy_display_name
     from vnpy_ctabacktester.ui.widget import (
         BacktesterManager,
@@ -887,6 +887,7 @@ def patch_backtester_manager() -> None:
             f"参数：{candidate['params']}",
             f"目标：{selected_label}",
             f"回测摘要：{summary_text}",
+            "规则：同一股票可保留多个候选配置，但同一时刻只能启用一条。",
         ]
         if current_config.symbol_configs and current_config.interval != candidate["interval"]:
             message_lines.append("")
@@ -1373,7 +1374,7 @@ def main() -> int:
 
     from vnpy.trader.engine import MainEngine
     from vnpy.trader.ui import MainWindow, create_qapp
-    from vnpy_alertcenter import AlertCenterApp
+    from vnpy_alertcenter.app import AlertCenterApp
     from vnpy_ctabacktester import CtaBacktesterApp
     from vnpy_ctastrategy import CtaStrategyApp
     from vnpy_datamanager import DataManagerApp

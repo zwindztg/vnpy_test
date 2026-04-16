@@ -1,22 +1,16 @@
-"""vn.py CTA 实时监控功能模块。"""
+"""CTA 实时监控包入口。"""
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import Any
 
-from vnpy.trader.app import BaseApp
-from vnpy_ctabacktester import CtaBacktesterApp
-
-from .engine import APP_NAME, AlertCenterEngine
+__all__ = ["AlertCenterApp"]
 
 
-class AlertCenterApp(BaseApp):
-    """把 CTA 实时监控能力挂进 vn.py 的功能菜单。"""
+def __getattr__(name: str) -> Any:
+    """对外兼容 AlertCenterApp，但避免导入包时立即加载 GUI 依赖。"""
+    if name == "AlertCenterApp":
+        from .app import AlertCenterApp
 
-    app_name: str = APP_NAME
-    app_module: str = __module__
-    app_path: Path = Path(__file__).parent
-    display_name: str = "CTA 实时监控"
-    engine_class: type[AlertCenterEngine] = AlertCenterEngine
-    widget_name: str = "AlertCenterWidget"
-    icon_name: str = CtaBacktesterApp.icon_name
+        return AlertCenterApp
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

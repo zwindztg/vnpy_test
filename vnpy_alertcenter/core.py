@@ -20,6 +20,9 @@ from uuid import uuid4
 import pandas as pd
 import requests
 from zoneinfo import ZoneInfo
+from vnpy.trader.constant import Exchange, Interval
+from vnpy.trader.database import get_database
+from vnpy.trader.object import BarData
 
 try:
     from pytdx.config.hosts import hq_hosts as PYTDX_HQ_HOSTS
@@ -100,6 +103,13 @@ SOURCE_CTA_MODIFIED = "cta_modified"
 ParamValue: TypeAlias = int | float
 
 
+@dataclass(frozen=True)
+class DatabaseIntervalProxy:
+    """兼容 vn.py 原生枚举未覆盖的分钟周期。"""
+
+    value: str
+
+
 def generate_config_id() -> str:
     """为每条监控配置生成稳定身份，避免同股票多策略时互相覆盖。"""
     return uuid4().hex[:12]
@@ -109,6 +119,16 @@ def normalize_config_id(config_id: object) -> str:
     """把配置身份统一成非空字符串，兼容旧配置文件缺少该字段的情况。"""
     raw_value = str(config_id or "").strip()
     return raw_value or generate_config_id()
+
+
+def make_database_interval(interval: str) -> Interval | DatabaseIntervalProxy:
+    """把监控周期转换成可写入 vn.py sqlite 的 interval 对象。"""
+    normalized = normalize_interval(interval)
+    try:
+        return Interval(normalized)
+    except ValueError:
+        # vn.py 原生枚举没有 5m/15m/30m，这里只补一个 value 接口给 sqlite 层复用。
+        return DatabaseIntervalProxy(normalized)
 
 
 @dataclass(frozen=True)
@@ -1499,7 +1519,7 @@ def publish_symbol_config(
     else:
         symbol_configs.append(normalized_symbol)
 
-    return AppConfig(
+    next_config = AppConfig(
         interval=normalize_interval(interval),
         poll_seconds=current_config.poll_seconds,
         adjust=current_config.adjust,
@@ -1507,6 +1527,12 @@ def publish_symbol_config(
         alert_history_path=current_config.alert_history_path,
         notification_enabled=current_config.notification_enabled,
         symbol_configs=tuple(symbol_configs),
+    )
+    target_config_id = next_config.symbol_configs[target_index].config_id
+    return update_symbol_enabled_state(
+        next_config,
+        config_id=target_config_id,
+        enabled=True,
     )
 
 
@@ -1516,19 +1542,36 @@ def update_symbol_enabled_state(
     config_id: str,
     enabled: bool,
 ) -> AppConfig:
-    """只更新某条已存在监控配置的启用状态，避免自动保存时误写其他表单改动。"""
+    """只更新启用状态，并在启用时自动关闭同股票其他候选。"""
     target_config_id = normalize_config_id(config_id)
-    updated = False
-    symbol_configs: list[SymbolConfig] = []
+    target_symbol: str | None = None
 
     for symbol in current_config.symbol_configs[:MAX_SYMBOL_COUNT]:
         if symbol.config_id == target_config_id:
+            target_symbol = symbol.vt_symbol
+            break
+
+    if target_symbol is None:
+        return current_config
+
+    updated = False
+    symbol_configs: list[SymbolConfig] = []
+    target_enabled = bool(enabled)
+
+    for symbol in current_config.symbol_configs[:MAX_SYMBOL_COUNT]:
+        next_enabled = symbol.enabled
+        if symbol.config_id == target_config_id:
+            next_enabled = target_enabled
+        elif target_enabled and symbol.vt_symbol == target_symbol:
+            next_enabled = False
+
+        if next_enabled != symbol.enabled:
             symbol_configs.append(
                 SymbolConfig(
                     vt_symbol=symbol.vt_symbol,
                     strategy_name=symbol.strategy_name,
                     params=symbol.params,
-                    enabled=bool(enabled),
+                    enabled=next_enabled,
                     source_state=symbol.source_state,
                     config_id=symbol.config_id,
                 )
@@ -2214,18 +2257,22 @@ class SymbolAlertService:
             )
             parsed = self.parse_bars(df)
             self.set_data_source(source_name)
-            return filter_completed_bars(
+            completed_bars = filter_completed_bars(
                 parsed,
                 now,
                 interval_minutes,
                 timestamp_mode="close",
             )
+            self.save_remote_bars_to_local_cache(completed_bars)
+            return completed_bars
         except Exception as exc:
             last_remote_error = exc
 
         if not allow_local_fallback:
             self.set_data_source("pytdx失败")
-            raise ValueError(f"pytdx 失败：{last_remote_error}") from last_remote_error
+            raise ValueError(
+                f"pytdx 失败：{last_remote_error}；实时模式不会回退到本地数据库。"
+            ) from last_remote_error
 
         local_bars, local_interval = self.fetch_local_database_bars(now)
         if local_bars:
@@ -2306,6 +2353,73 @@ class SymbolAlertService:
                 ),
             )
             return list(cursor.fetchall())
+
+    def get_latest_local_bar_datetime(self) -> datetime | None:
+        """读取当前股票和周期在本地 sqlite 中的最新一根 K 线时间。"""
+        database_path = get_project_database_path()
+        if not database_path.exists():
+            return None
+
+        symbol, exchange = split_vt_symbol(self.config.vt_symbol)
+        interval = normalize_interval(self.app_config.interval)
+        sql = (
+            "select max(datetime) "
+            "from dbbardata "
+            "where symbol = ? and exchange = ? and interval = ?"
+        )
+        try:
+            with sqlite3.connect(database_path) as connection:
+                cursor = connection.execute(sql, (symbol, exchange, interval))
+                row = cursor.fetchone()
+        except sqlite3.Error:
+            # 首次建库前可能还没有 dbbardata 表，此时按“本地暂无缓存”处理即可。
+            return None
+
+        if not row or not row[0]:
+            return None
+        return ensure_china_tz(datetime.fromisoformat(str(row[0])))
+
+    def build_database_bars(self, bars: list[AlertBar]) -> list[BarData]:
+        """把提醒中心的轻量 bar 转成 vn.py sqlite 可接受的 BarData。"""
+        symbol, exchange_text = split_vt_symbol(self.config.vt_symbol)
+        exchange = Exchange(exchange_text)
+        interval = make_database_interval(self.app_config.interval)
+        return [
+            BarData(
+                symbol=symbol,
+                exchange=exchange,
+                datetime=bar.dt,
+                interval=interval,
+                volume=bar.volume,
+                turnover=0,
+                open_interest=0,
+                open_price=bar.open_price,
+                high_price=bar.high_price,
+                low_price=bar.low_price,
+                close_price=bar.close_price,
+                gateway_name="PYTDX",
+            )
+            for bar in bars
+        ]
+
+    def save_remote_bars_to_local_cache(self, bars: list[AlertBar]) -> None:
+        """把远端成功获取到的完整分钟线追加写回本地 sqlite。"""
+        if not bars:
+            return
+
+        try:
+            latest_local_dt = self.get_latest_local_bar_datetime()
+            pending_bars = bars if latest_local_dt is None else [bar for bar in bars if bar.dt > latest_local_dt]
+            if not pending_bars:
+                return
+
+            database = get_database()
+            database.save_bar_data(
+                self.build_database_bars(pending_bars),
+                stream=latest_local_dt is not None,
+            )
+        except Exception as exc:
+            self.log("WARNING", f"pytdx 分钟线写回本地 sqlite 失败：{exc}")
 
     def parse_bars(self, df: pd.DataFrame) -> list[AlertBar]:
         """兼容 pytdx、东财等数据源字段名，提取提醒需要的时间、价格和成交量。"""
@@ -2486,6 +2600,7 @@ class AlertCenterRunner:
         )
         self.log("INFO", f"信号记录文件：{self.config.alert_history_path}")
         self.log("INFO", "当前仅输出 GUI 日志、信号记录 CSV 和桌面通知，不会触发任何下单或委托动作。")
+        self.log("INFO", "实时模式仅使用 pytdx 作为分钟线来源；本地 sqlite 只用于单次测试，不参与实时信号计算。")
         self.emit_initial_states()
         self.emit_status(True, False, "运行中")
 
@@ -2516,6 +2631,7 @@ class AlertCenterRunner:
                 f"标的={symbols}，周期={self.config.interval}。"
             ),
         )
+        self.log("INFO", "单次测试会先尝试 pytdx；只有远端失败时才回退到本地 sqlite，同样不会降级成日线演示。")
         self.emit_initial_states()
         self.emit_status(False, True, f"测试中：{now.strftime('%Y-%m-%d %H:%M')}")
         self.run_once(reference_time=now, ignore_trading_time=True, allow_local_fallback=True)

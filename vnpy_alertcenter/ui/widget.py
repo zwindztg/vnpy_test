@@ -15,6 +15,9 @@ from ..core import (
     CHINA_TZ,
     ChartSnapshotData,
     MAX_SYMBOL_COUNT,
+    SOURCE_CTA_MODIFIED,
+    SOURCE_CTA_PUBLISHED,
+    SOURCE_MANUAL,
     STRATEGY_ORDER,
     AppConfig,
     RecordData,
@@ -25,6 +28,8 @@ from ..core import (
     build_default_state,
     ensure_valid_symbol_config,
     fetch_reference_open_price,
+    find_enabled_symbol_conflicts,
+    generate_config_id,
     get_default_strategy_params,
     get_strategy_definition,
     get_strategy_display_name,
@@ -33,6 +38,7 @@ from ..core import (
 from ..engine import (
     APP_NAME,
     EVENT_ALERTCENTER_CHART,
+    EVENT_ALERTCENTER_CONFIG,
     EVENT_ALERTCENTER_LOG,
     EVENT_ALERTCENTER_RECORD,
     EVENT_ALERTCENTER_STATE,
@@ -59,9 +65,12 @@ class SymbolRowWidgets:
     enabled: QtWidgets.QCheckBox
     vt_symbol: QtWidgets.QLineEdit
     strategy_combo: QtWidgets.QComboBox
+    source_label: QtWidgets.QLabel
     params: list[ParamInputWidgets]
     current_strategy_name: str = BASIC_ALERT_STRATEGY
     cached_params: dict[str, dict[str, float | int]] = field(default_factory=dict)
+    source_state: str = SOURCE_MANUAL
+    config_id: str = ""
 
 
 class ThinSplitterHandle(QtWidgets.QSplitterHandle):
@@ -123,11 +132,13 @@ class AlertCenterWidget(QtWidgets.QWidget):
     signal_record: QtCore.Signal = QtCore.Signal(Event)
     signal_state: QtCore.Signal = QtCore.Signal(Event)
     signal_chart: QtCore.Signal = QtCore.Signal(Event)
+    signal_config: QtCore.Signal = QtCore.Signal(Event)
 
     STATE_HEADERS: tuple[str, ...] = (
         "股票",
         "启用",
         "策略",
+        "来源",
         "数据源",
         "最新K线",
         "最新收盘",
@@ -164,6 +175,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.recent_records_cache: list[RecordData] = []
         self.latest_preview_time: datetime | None = None
         self.metric_value_labels: dict[str, QtWidgets.QLabel] = {}
+        self.source_tracking_suspended: bool = False
 
         self.init_ui()
         self.register_event()
@@ -654,8 +666,9 @@ class AlertCenterWidget(QtWidgets.QWidget):
         grid.setVerticalSpacing(10)
         grid.setColumnStretch(1, 2)
         grid.setColumnStretch(2, 1)
+        grid.setColumnStretch(3, 0)
 
-        headers = ("启用", "股票代码", "提醒策略", "参数1", "参数2", "参数3", "参数4")
+        headers = ("启用", "股票代码", "监控策略", "来源", "参数1", "参数2", "参数3", "参数4")
         for column, title in enumerate(headers):
             label = QtWidgets.QLabel(title)
             label.setProperty("textRole", "gridHeader")
@@ -665,12 +678,17 @@ class AlertCenterWidget(QtWidgets.QWidget):
             strategy_combo = QtWidgets.QComboBox()
             for strategy_name in STRATEGY_ORDER:
                 strategy_combo.addItem(get_strategy_display_name(strategy_name), strategy_name)
+            source_label = QtWidgets.QLabel("")
+            source_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            source_label.setProperty("badgeRole", "pill")
+            source_label.setMinimumWidth(78)
 
             param_widgets: list[ParamInputWidgets] = []
             row_widgets = SymbolRowWidgets(
                 enabled=QtWidgets.QCheckBox(),
                 vt_symbol=QtWidgets.QLineEdit(),
                 strategy_combo=strategy_combo,
+                source_label=source_label,
                 params=param_widgets,
             )
             row_widgets.vt_symbol.setPlaceholderText("例如 601869.SSE")
@@ -679,11 +697,15 @@ class AlertCenterWidget(QtWidgets.QWidget):
             grid.addWidget(self.create_symbol_row_field(row_widgets.enabled, center_widget=True), row + 1, 0)
             grid.addWidget(self.create_symbol_row_field(row_widgets.vt_symbol), row + 1, 1)
             grid.addWidget(self.create_symbol_row_field(row_widgets.strategy_combo), row + 1, 2)
+            grid.addWidget(self.create_symbol_row_field(row_widgets.source_label), row + 1, 3)
 
             for column in range(4):
                 param_input = self.create_param_input()
                 param_widgets.append(param_input)
-                grid.addWidget(param_input.container, row + 1, column + 3)
+                grid.addWidget(param_input.container, row + 1, column + 4)
+                param_input.editor.valueChanged.connect(
+                    lambda _value, row_index=row: self.on_param_edited(row_index)
+                )
 
             row_widgets.strategy_combo.currentIndexChanged.connect(
                 lambda _value, row_index=row: self.on_strategy_changed(row_index)
@@ -691,8 +713,12 @@ class AlertCenterWidget(QtWidgets.QWidget):
             row_widgets.vt_symbol.editingFinished.connect(
                 lambda row_index=row: self.on_symbol_edited(row_index)
             )
+            row_widgets.vt_symbol.textEdited.connect(
+                lambda _text, row_index=row: self.on_symbol_text_edited(row_index)
+            )
             row_widgets.enabled.toggled.connect(lambda _checked: self.refresh_summary_metrics())
             row_widgets.vt_symbol.textChanged.connect(lambda _text: self.refresh_summary_metrics())
+            self.set_row_source_state(row_widgets, SOURCE_MANUAL)
             self.apply_strategy_to_row(row_widgets, BASIC_ALERT_STRATEGY)
 
         body.setLayout(grid)
@@ -920,12 +946,14 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.signal_record.connect(self.process_record_event)
         self.signal_state.connect(self.process_state_event)
         self.signal_chart.connect(self.process_chart_event)
+        self.signal_config.connect(self.process_config_event)
 
         self.event_engine.register(EVENT_ALERTCENTER_LOG, self.signal_log.emit)
         self.event_engine.register(EVENT_ALERTCENTER_STATUS, self.signal_status.emit)
         self.event_engine.register(EVENT_ALERTCENTER_RECORD, self.signal_record.emit)
         self.event_engine.register(EVENT_ALERTCENTER_STATE, self.signal_state.emit)
         self.event_engine.register(EVENT_ALERTCENTER_CHART, self.signal_chart.emit)
+        self.event_engine.register(EVENT_ALERTCENTER_CONFIG, self.signal_config.emit)
 
     def load_config_from_engine(self) -> None:
         """重新从磁盘读取配置并刷新界面。"""
@@ -934,7 +962,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.populate_state_placeholders(self.current_config)
         self.load_recent_records()
         self.refresh_runtime_info()
-        self.append_log("INFO", "UI", "已从配置文件重新加载提醒设置。")
+        self.append_log("INFO", "UI", "已从配置文件重新加载监控设置。")
         self.set_mode_label("neutral", "空闲")
         self.refresh_chart_placeholder(self.current_config)
 
@@ -943,14 +971,18 @@ class AlertCenterWidget(QtWidgets.QWidget):
         row_widgets.enabled.setChecked(False)
         row_widgets.vt_symbol.setText("")
         row_widgets.cached_params.clear()
+        row_widgets.config_id = ""
         row_widgets.strategy_combo.blockSignals(True)
         self.set_combo_data(row_widgets.strategy_combo, BASIC_ALERT_STRATEGY)
         row_widgets.strategy_combo.blockSignals(False)
         row_widgets.current_strategy_name = BASIC_ALERT_STRATEGY
+        row_widgets.source_state = SOURCE_MANUAL
+        self.update_row_source_label(row_widgets)
         self.apply_strategy_to_row(row_widgets, BASIC_ALERT_STRATEGY)
 
     def load_config_to_form(self, config: AppConfig) -> None:
         """把配置对象回填到表单。"""
+        self.source_tracking_suspended = True
         self.set_combo_data(self.interval_combo, config.interval)
         self.poll_spin.setValue(config.poll_seconds)
         self.cooldown_spin.setValue(config.cooldown_seconds)
@@ -964,13 +996,17 @@ class AlertCenterWidget(QtWidgets.QWidget):
             row_widgets = self.row_widgets[index]
             row_widgets.enabled.setChecked(symbol.enabled)
             row_widgets.vt_symbol.setText(symbol.vt_symbol)
+            row_widgets.config_id = symbol.config_id
             row_widgets.cached_params[symbol.strategy_name] = dict(symbol.params)
             row_widgets.strategy_combo.blockSignals(True)
             self.set_combo_data(row_widgets.strategy_combo, symbol.strategy_name)
             row_widgets.strategy_combo.blockSignals(False)
             row_widgets.current_strategy_name = symbol.strategy_name
+            row_widgets.source_state = symbol.source_state
+            self.update_row_source_label(row_widgets)
             self.apply_strategy_to_row(row_widgets, symbol.strategy_name, symbol.params)
             self.refresh_basic_price_defaults(row_widgets)
+        self.source_tracking_suspended = False
         self.refresh_chart_placeholder(config)
         self.refresh_summary_metrics()
 
@@ -1005,6 +1041,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
             effective_params.update(params)
         row_widgets.cached_params[strategy_name] = dict(effective_params)
 
+        self.source_tracking_suspended = True
         for index, param_input in enumerate(row_widgets.params):
             if index < len(definition.param_specs):
                 spec = definition.param_specs[index]
@@ -1025,20 +1062,35 @@ class AlertCenterWidget(QtWidgets.QWidget):
                 param_input.editor.setDecimals(0)
                 param_input.editor.setSingleStep(1)
                 param_input.editor.setValue(0.0)
+        self.source_tracking_suspended = False
 
     def on_strategy_changed(self, row_index: int) -> None:
         """切换策略时动态刷新该行参数区。"""
         row_widgets = self.row_widgets[row_index]
+        self.mark_row_modified(row_widgets)
         self.cache_current_row_params(row_widgets)
         strategy_name = normalize_strategy_name(str(row_widgets.strategy_combo.currentData()))
         row_widgets.current_strategy_name = strategy_name
         self.apply_strategy_to_row(row_widgets, strategy_name)
         self.refresh_basic_price_defaults(row_widgets)
 
+    def on_symbol_text_edited(self, row_index: int) -> None:
+        """用户手工改股票代码时，立即把 CTA 发布配置标记成已修改。"""
+        row_widgets = self.row_widgets[row_index]
+        self.mark_row_modified(row_widgets)
+        self.update_row_source_label(row_widgets)
+
     def on_symbol_edited(self, row_index: int) -> None:
         """用户修改股票代码后，按最近交易日开盘价刷新基础提醒默认值。"""
         row_widgets = self.row_widgets[row_index]
         self.refresh_basic_price_defaults(row_widgets)
+
+    def on_param_edited(self, row_index: int) -> None:
+        """用户手工调整策略参数时，把 CTA 发布配置标记成已修改。"""
+        if self.source_tracking_suspended:
+            return
+        row_widgets = self.row_widgets[row_index]
+        self.mark_row_modified(row_widgets)
 
     def refresh_basic_price_defaults(self, row_widgets: SymbolRowWidgets) -> None:
         """把基础提醒策略的突破价/止损价更新为最近交易日开盘价的正负 2%。"""
@@ -1065,12 +1117,14 @@ class AlertCenterWidget(QtWidgets.QWidget):
     def collect_config_from_form(self) -> AppConfig:
         """把当前表单值组装成配置对象。"""
         symbol_configs: list[SymbolConfig] = []
-        seen_symbols: set[str] = set()
         for row_widgets in self.row_widgets:
             vt_symbol = row_widgets.vt_symbol.text().strip().upper()
             if not vt_symbol:
                 continue
 
+            if not row_widgets.config_id:
+                # 空白行第一次被用户填写时补一个稳定身份，避免同股票多策略时状态互相覆盖。
+                row_widgets.config_id = generate_config_id()
             strategy_name = normalize_strategy_name(str(row_widgets.strategy_combo.currentData()))
             params = self.collect_strategy_params(row_widgets, strategy_name)
             symbol_config = SymbolConfig(
@@ -1078,16 +1132,15 @@ class AlertCenterWidget(QtWidgets.QWidget):
                 strategy_name=strategy_name,
                 params=params,
                 enabled=row_widgets.enabled.isChecked(),
+                source_state=row_widgets.source_state,
+                config_id=row_widgets.config_id,
             )
             try:
                 symbol_config = ensure_valid_symbol_config(symbol_config)
             except ValueError as exc:
                 raise ValueError(f"{vt_symbol} 的参数不合法：{exc}") from exc
 
-            if symbol_config.vt_symbol in seen_symbols:
-                raise ValueError(f"{symbol_config.vt_symbol} 重复出现，请删除重复股票。")
-
-            seen_symbols.add(symbol_config.vt_symbol)
+            row_widgets.config_id = symbol_config.config_id
             symbol_configs.append(symbol_config)
 
         if not symbol_configs:
@@ -1124,6 +1177,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         """用历史时间执行单次测试，便于非交易时段验证提醒逻辑。"""
         try:
             config = self.collect_config_from_form()
+            self.validate_enabled_symbol_conflicts(config)
             preview_dt = self.preview_time_edit.dateTime().toPyDateTime()
             preview_dt = preview_dt.replace(tzinfo=CHINA_TZ)
         except ValueError as exc:
@@ -1148,6 +1202,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         """用当前表单配置启动监控线程。"""
         try:
             config = self.collect_config_from_form()
+            self.validate_enabled_symbol_conflicts(config)
         except ValueError as exc:
             self.show_warning(str(exc))
             return
@@ -1187,9 +1242,9 @@ class AlertCenterWidget(QtWidgets.QWidget):
 
         for row, symbol in enumerate(config.symbol_configs[:MAX_SYMBOL_COUNT]):
             self.state_table.insertRow(row)
-            self.state_rows[symbol.vt_symbol] = row
+            self.state_rows[symbol.config_id] = row
             default_state = build_default_state(symbol)
-            self.state_cache[symbol.vt_symbol] = default_state
+            self.state_cache[symbol.config_id] = default_state
             self.update_state_row(default_state)
         self.refresh_summary_metrics()
 
@@ -1236,7 +1291,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
     def process_state_event(self, event: Event) -> None:
         """处理单只股票状态事件。"""
         data: SymbolStateData = event.data
-        self.state_cache[data.vt_symbol] = data
+        self.state_cache[data.config_id] = data
         self.update_state_row(data)
         self.refresh_summary_metrics()
 
@@ -1244,7 +1299,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         """处理右侧 K 线图快照事件。"""
         data: ChartSnapshotData = event.data
         primary_symbol = self.get_primary_enabled_symbol(self.current_config)
-        if primary_symbol and data.vt_symbol != primary_symbol.vt_symbol:
+        if primary_symbol and data.config_id != primary_symbol.config_id:
             return
         self.latest_chart_snapshot = data
         if data.mode == "preview":
@@ -1254,18 +1309,28 @@ class AlertCenterWidget(QtWidgets.QWidget):
             self.chart_popup.set_snapshot(data)
         self.refresh_summary_metrics()
 
+    def process_config_event(self, event: Event) -> None:
+        """处理外部配置刷新事件，让已打开窗口同步最新监控配置。"""
+        config: AppConfig = event.data
+        self.current_config = config
+        self.load_config_to_form(config)
+        self.populate_state_placeholders(config)
+        self.refresh_runtime_info()
+        self.refresh_summary_metrics()
+
     def update_state_row(self, data: SymbolStateData) -> None:
         """更新或新增一条状态行。"""
-        row = self.state_rows.get(data.vt_symbol)
+        row = self.state_rows.get(data.config_id)
         if row is None:
             row = self.state_table.rowCount()
             self.state_table.insertRow(row)
-            self.state_rows[data.vt_symbol] = row
+            self.state_rows[data.config_id] = row
 
         values = [
             data.vt_symbol,
             "是" if data.enabled else "否",
             get_strategy_display_name(data.strategy_name),
+            self.get_source_display_text(self.find_config_source_state(data.config_id)),
             data.data_source,
             data.latest_bar_dt,
             data.latest_close,
@@ -1445,6 +1510,63 @@ class AlertCenterWidget(QtWidgets.QWidget):
         label.style().polish(label)
         label.update()
 
+    def get_source_badge_payload(self, source_state: str) -> tuple[str, str]:
+        """把配置来源状态转换成界面展示文本和胶囊颜色。"""
+        if source_state == SOURCE_CTA_PUBLISHED:
+            return "CTA 回测", "preview"
+        if source_state == SOURCE_CTA_MODIFIED:
+            return "已修改", "warning"
+        return "手工", "neutral"
+
+    def get_source_display_text(self, source_state: str) -> str:
+        """把配置来源状态转换成表格里的紧凑文案。"""
+        return self.get_source_badge_payload(source_state)[0]
+
+    def update_row_source_label(self, row_widgets: SymbolRowWidgets) -> None:
+        """刷新股票配置区里某一行的来源标签。"""
+        if not row_widgets.vt_symbol.text().strip():
+            row_widgets.source_label.setText("")
+            row_widgets.source_label.setProperty("badgeTone", "neutral")
+            row_widgets.source_label.style().unpolish(row_widgets.source_label)
+            row_widgets.source_label.style().polish(row_widgets.source_label)
+            row_widgets.source_label.update()
+            return
+        text, tone = self.get_source_badge_payload(row_widgets.source_state)
+        self.set_badge_text(row_widgets.source_label, text, tone)
+
+    def set_row_source_state(self, row_widgets: SymbolRowWidgets, source_state: str) -> None:
+        """统一写入一行配置的来源状态，并刷新胶囊显示。"""
+        row_widgets.source_state = source_state
+        self.update_row_source_label(row_widgets)
+
+    def mark_row_modified(self, row_widgets: SymbolRowWidgets) -> None:
+        """当 CTA 发布配置被手工改动时，切换成“已修改”状态。"""
+        if self.source_tracking_suspended:
+            return
+        if row_widgets.source_state == SOURCE_CTA_PUBLISHED:
+            self.set_row_source_state(row_widgets, SOURCE_CTA_MODIFIED)
+
+    def find_config_source_state(self, config_id: str) -> str:
+        """按配置身份查找来源状态，避免同股票多策略时显示串行。"""
+        for symbol in self.current_config.symbol_configs:
+            if symbol.config_id == config_id:
+                return symbol.source_state
+        return SOURCE_MANUAL
+
+    def validate_enabled_symbol_conflicts(self, config: AppConfig) -> None:
+        """在启动前拦截同股票多条启用，避免运行时状态和图表来源混乱。"""
+        conflicts = find_enabled_symbol_conflicts(config)
+        if not conflicts:
+            return
+
+        messages = []
+        for vt_symbol, rows in conflicts.items():
+            row_text = "、".join(str(row) for row in rows)
+            messages.append(
+                f"{vt_symbol} 在第 {row_text} 行同时启用。CTA 实时监控中心暂不支持同一股票同时运行多条策略，请保留一条启用。"
+            )
+        raise ValueError("\n".join(messages))
+
     def refresh_summary_metrics(self) -> None:
         """根据当前缓存和表单状态刷新左侧摘要指标。"""
         if not self.metric_value_labels:
@@ -1467,7 +1589,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         primary_symbol = self.get_primary_enabled_symbol(self.current_config)
         data_source = "待获取"
         if primary_symbol:
-            state = self.state_cache.get(primary_symbol.vt_symbol)
+            state = self.state_cache.get(primary_symbol.config_id)
             if state and state.data_source not in {"", "-", "待获取"}:
                 data_source = state.data_source
         if data_source == "待获取" and self.latest_chart_snapshot and self.latest_chart_snapshot.data_source:

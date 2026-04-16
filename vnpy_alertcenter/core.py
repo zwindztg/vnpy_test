@@ -15,6 +15,7 @@ from enum import Enum
 from pathlib import Path
 from threading import Event as ThreadEvent
 from typing import Callable, TypeAlias
+from uuid import uuid4
 
 import pandas as pd
 import requests
@@ -92,8 +93,22 @@ BASIC_ALERT_STRATEGY = "BasicAlertStrategy"
 LESSON_A_SHARE_LONG_ONLY = "LessonAShareLongOnlyStrategy"
 LESSON_DONCHIAN = "LessonDonchianAShareStrategy"
 LESSON_VOLUME_BREAKOUT = "LessonVolumeBreakoutAShareStrategy"
+SOURCE_MANUAL = "manual"
+SOURCE_CTA_PUBLISHED = "cta_published"
+SOURCE_CTA_MODIFIED = "cta_modified"
 
 ParamValue: TypeAlias = int | float
+
+
+def generate_config_id() -> str:
+    """为每条监控配置生成稳定身份，避免同股票多策略时互相覆盖。"""
+    return uuid4().hex[:12]
+
+
+def normalize_config_id(config_id: object) -> str:
+    """把配置身份统一成非空字符串，兼容旧配置文件缺少该字段的情况。"""
+    raw_value = str(config_id or "").strip()
+    return raw_value or generate_config_id()
 
 
 @dataclass(frozen=True)
@@ -112,12 +127,14 @@ class ParamSpec:
 
 @dataclass(frozen=True)
 class SymbolConfig:
-    """保存单只股票的提醒参数。"""
+    """保存单只股票的监控参数和配置来源。"""
 
     vt_symbol: str
     strategy_name: str
     params: dict[str, ParamValue]
     enabled: bool = True
+    source_state: str = SOURCE_MANUAL
+    config_id: str = field(default_factory=generate_config_id)
 
 
 @dataclass(frozen=True)
@@ -186,6 +203,7 @@ class ChartMarkerData:
 class ChartSnapshotData:
     """GUI 右侧 K 线图所需的一次完整快照。"""
 
+    config_id: str
     vt_symbol: str
     strategy_name: str
     interval: str
@@ -225,6 +243,7 @@ class RecordData:
 class SymbolStateData:
     """单只股票运行态快照。"""
 
+    config_id: str
     vt_symbol: str
     enabled: bool
     strategy_name: str
@@ -290,6 +309,16 @@ def normalize_strategy_name(strategy_name: str) -> str:
     if strategy_name in STRATEGY_REGISTRY:
         return strategy_name
     return BASIC_ALERT_STRATEGY
+
+
+def normalize_source_state(source_state: object) -> str:
+    """把配置来源统一规范成有限的三种状态。"""
+    raw_source = str(source_state or SOURCE_MANUAL).strip().lower()
+    if raw_source == SOURCE_CTA_PUBLISHED:
+        return SOURCE_CTA_PUBLISHED
+    if raw_source == SOURCE_CTA_MODIFIED:
+        return SOURCE_CTA_MODIFIED
+    return SOURCE_MANUAL
 
 
 def get_strategy_definition(strategy_name: str) -> StrategyDefinition:
@@ -1117,6 +1146,7 @@ DEFAULT_SYMBOL_CONFIGS: tuple[SymbolConfig, ...] = (
         vt_symbol="601869.SSE",
         strategy_name=BASIC_ALERT_STRATEGY,
         params=get_default_strategy_params(BASIC_ALERT_STRATEGY),
+        config_id="default-601869-basic",
     ),
     SymbolConfig(
         vt_symbol="600000.SSE",
@@ -1128,6 +1158,7 @@ DEFAULT_SYMBOL_CONFIGS: tuple[SymbolConfig, ...] = (
             "slow_ma_window": 8,
         },
         enabled=False,
+        config_id="default-600000-basic",
     ),
 )
 
@@ -1307,6 +1338,8 @@ def save_app_config(config: AppConfig, path: Path = DEFAULT_CONFIG_PATH) -> None
                 "strategy_name": symbol.strategy_name,
                 "params": merge_strategy_params(symbol.strategy_name, symbol.params),
                 "enabled": symbol.enabled,
+                "source_state": normalize_source_state(symbol.source_state),
+                "config_id": normalize_config_id(symbol.config_id),
             }
             for symbol in config.symbol_configs[:MAX_SYMBOL_COUNT]
         ],
@@ -1337,6 +1370,8 @@ def build_symbol_config_from_json(item: dict[str, object]) -> SymbolConfig | Non
         strategy_name=strategy_name,
         params=raw_params,
         enabled=bool(item.get("enabled", True)),
+        source_state=normalize_source_state(item.get("source_state")),
+        config_id=normalize_config_id(item.get("config_id")),
     )
 
     try:
@@ -1351,7 +1386,6 @@ def parse_symbol_configs(raw_symbols: object) -> tuple[SymbolConfig, ...]:
         return DEFAULT_SYMBOL_CONFIGS
 
     configs: list[SymbolConfig] = []
-    seen_symbols: set[str] = set()
     for item in raw_symbols[:MAX_SYMBOL_COUNT]:
         if not isinstance(item, dict):
             continue
@@ -1359,10 +1393,6 @@ def parse_symbol_configs(raw_symbols: object) -> tuple[SymbolConfig, ...]:
         config = build_symbol_config_from_json(item)
         if config is None:
             continue
-        if config.vt_symbol in seen_symbols:
-            continue
-
-        seen_symbols.add(config.vt_symbol)
         configs.append(config)
 
     return tuple(configs) if configs else DEFAULT_SYMBOL_CONFIGS
@@ -1371,6 +1401,7 @@ def parse_symbol_configs(raw_symbols: object) -> tuple[SymbolConfig, ...]:
 def build_default_state(config: SymbolConfig) -> SymbolStateData:
     """根据股票配置创建默认状态。"""
     return SymbolStateData(
+        config_id=config.config_id,
         vt_symbol=config.vt_symbol,
         enabled=config.enabled,
         strategy_name=config.strategy_name,
@@ -1408,12 +1439,77 @@ def normalize_symbol_config(config: SymbolConfig) -> SymbolConfig:
         strategy_name=strategy_name,
         params=params,
         enabled=bool(config.enabled),
+        source_state=normalize_source_state(config.source_state),
+        config_id=normalize_config_id(config.config_id),
     )
 
 
 def ensure_valid_symbol_config(config: SymbolConfig) -> SymbolConfig:
     """对外暴露带异常信息的配置校验接口。"""
     return normalize_symbol_config(config)
+
+
+def publish_symbol_config(
+    current_config: AppConfig,
+    published_symbol: SymbolConfig,
+    *,
+    interval: str,
+    target_index: int,
+) -> AppConfig:
+    """把 CTA 回测发布的一条策略配置落到实时监控配置里。"""
+    normalized_symbol = ensure_valid_symbol_config(
+        SymbolConfig(
+            vt_symbol=published_symbol.vt_symbol,
+            strategy_name=published_symbol.strategy_name,
+            params=published_symbol.params,
+            enabled=True,
+            source_state=SOURCE_CTA_PUBLISHED,
+            config_id=generate_config_id(),
+        )
+    )
+    if target_index < 0 or target_index >= MAX_SYMBOL_COUNT:
+        raise ValueError("发布目标位置超出监控中心支持的最大行数。")
+
+    symbol_configs = list(current_config.symbol_configs[:MAX_SYMBOL_COUNT])
+    if target_index > len(symbol_configs):
+        raise ValueError("发布目标位置不是当前可用空位，请重新选择。")
+
+    if target_index < len(symbol_configs):
+        symbol_configs[target_index] = SymbolConfig(
+            vt_symbol=normalized_symbol.vt_symbol,
+            strategy_name=normalized_symbol.strategy_name,
+            params=normalized_symbol.params,
+            enabled=True,
+            source_state=SOURCE_CTA_PUBLISHED,
+            config_id=generate_config_id(),
+        )
+    else:
+        symbol_configs.append(normalized_symbol)
+
+    return AppConfig(
+        interval=normalize_interval(interval),
+        poll_seconds=current_config.poll_seconds,
+        adjust=current_config.adjust,
+        cooldown_seconds=current_config.cooldown_seconds,
+        alert_history_path=current_config.alert_history_path,
+        notification_enabled=current_config.notification_enabled,
+        symbol_configs=tuple(symbol_configs),
+    )
+
+
+def find_enabled_symbol_conflicts(config: AppConfig) -> dict[str, tuple[int, ...]]:
+    """找出同一股票被多条启用配置同时占用的冲突行号。"""
+    enabled_rows: dict[str, list[int]] = {}
+    for index, symbol in enumerate(config.symbol_configs[:MAX_SYMBOL_COUNT], start=1):
+        if not symbol.enabled:
+            continue
+        enabled_rows.setdefault(symbol.vt_symbol, []).append(index)
+
+    return {
+        vt_symbol: tuple(rows)
+        for vt_symbol, rows in enabled_rows.items()
+        if len(rows) > 1
+    }
 
 
 def validate_symbol_config(config: SymbolConfig) -> bool:
@@ -2266,6 +2362,7 @@ class SymbolAlertService:
             bars=bars,
         )
         snapshot = ChartSnapshotData(
+            config_id=self.config.config_id,
             vt_symbol=self.config.vt_symbol,
             strategy_name=self.config.strategy_name,
             interval=self.app_config.interval,
@@ -2318,15 +2415,15 @@ class AlertCenterRunner:
             )
             for symbol_config in config.symbol_configs[:MAX_SYMBOL_COUNT]
         ]
-        self.primary_chart_symbol: str = next(
-            (service.config.vt_symbol for service in self.services if service.config.enabled),
+        self.primary_chart_config_id: str = next(
+            (service.config.config_id for service in self.services if service.config.enabled),
             "",
         )
         for service in self.services:
             service.chart_enabled = (
-                bool(self.primary_chart_symbol)
+                bool(self.primary_chart_config_id)
                 and service.config.enabled
-                and service.config.vt_symbol == self.primary_chart_symbol
+                and service.config.config_id == self.primary_chart_config_id
             )
 
     def get_enabled_services(self) -> list[SymbolAlertService]:

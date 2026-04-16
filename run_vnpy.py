@@ -691,7 +691,9 @@ def patch_backtester_manager() -> None:
     """让 CTA 回测界面兼容 SH/SZ/BJ 等常见股票后缀输入。"""
     from vnpy.trader.constant import Exchange
     from vnpy.trader.database import DB_TZ
-    from vnpy.trader.ui import QtCore
+    from vnpy.trader.ui import QtCore, QtWidgets
+    from vnpy_alertcenter import AlertCenterApp
+    from vnpy_alertcenter.core import MAX_SYMBOL_COUNT, get_strategy_display_name
     from vnpy_ctabacktester.ui.widget import (
         BacktesterManager,
         BacktestingSettingEditor,
@@ -701,7 +703,9 @@ def patch_backtester_manager() -> None:
     if getattr(BacktesterManager, "_vnpy_test_symbol_patched", False):
         return
 
+    original_init_ui = BacktesterManager.init_ui
     original_edit_strategy_code = BacktesterManager.edit_strategy_code
+    original_process_backtesting_finished_event = BacktesterManager.process_backtesting_finished_event
 
     def sync_symbol_input(self) -> str:
         """把输入框里的股票代码统一成 vn.py 内部格式。"""
@@ -726,6 +730,75 @@ def patch_backtester_manager() -> None:
                 return index
         return -1
 
+    def is_publishable_monitor_strategy(class_name: str) -> bool:
+        """判断当前 CTA 策略是否支持直接发布到实时监控中心。"""
+        return class_name in {
+            "LessonAShareLongOnlyStrategy",
+            "LessonDonchianAShareStrategy",
+            "LessonVolumeBreakoutAShareStrategy",
+        }
+
+    def build_publish_summary_text(candidate: dict) -> str:
+        """把最近一次回测结果压缩成适合确认框展示的摘要。"""
+        stats = candidate.get("statistics") or {}
+        start = candidate.get("start")
+        end = candidate.get("end")
+        total_return = stats.get("total_return", "-")
+        max_dd = stats.get("max_ddpercent", "-")
+        total_days = stats.get("total_days") or 0
+        profit_days = stats.get("profit_days") or 0
+        if total_days:
+            win_rate = f"{profit_days / total_days * 100:.2f}%"
+        else:
+            win_rate = "-"
+
+        if isinstance(start, datetime):
+            start_text = start.strftime("%Y-%m-%d")
+        else:
+            start_text = "-"
+        if isinstance(end, datetime):
+            end_text = end.strftime("%Y-%m-%d")
+        else:
+            end_text = "-"
+
+        return (
+            f"区间 {start_text} ~ {end_text} / "
+            f"总收益 {total_return} / 最大回撤 {max_dd} / 胜率 {win_rate}"
+        )
+
+    def build_publish_target_options(self, current_config, candidate: dict) -> tuple[list[tuple[str, int]], int]:
+        """根据当前监控配置生成可选发布目标，并返回推荐项索引。"""
+        options: list[tuple[str, int]] = []
+        recommend_index = 0
+        symbol_configs = list(current_config.symbol_configs[:MAX_SYMBOL_COUNT])
+        target_symbol = str(candidate["vt_symbol"])
+        target_strategy = str(candidate["class_name"])
+
+        if len(symbol_configs) < MAX_SYMBOL_COUNT:
+            empty_index = len(symbol_configs)
+            label = (
+                f"新增到空位 {empty_index + 1}（推荐）：{target_symbol} / "
+                f"{STRATEGY_DISPLAY_NAMES.get(target_strategy, target_strategy)}"
+            )
+            recommend_index = len(options)
+            options.append((label, empty_index))
+
+        for index, symbol in enumerate(symbol_configs):
+            label = (
+                f"覆盖第{index + 1}位：{symbol.vt_symbol} / "
+                f"{get_strategy_display_name(symbol.strategy_name)}"
+            )
+            options.append((label, index))
+
+        if not options:
+            label = (
+                f"新增到第 1 位：{target_symbol} / "
+                f"{STRATEGY_DISPLAY_NAMES.get(target_strategy, target_strategy)}"
+            )
+            options.append((label, 0))
+
+        return options, recommend_index
+
     def init_strategy_settings(self) -> None:
         """把策略下拉框改成中文+英文双语显示。"""
         self.class_names = self.backtester_engine.get_strategy_class_names()
@@ -738,6 +811,141 @@ def patch_backtester_manager() -> None:
             self.settings[class_name] = setting
             display_name = STRATEGY_DISPLAY_NAMES.get(class_name, class_name)
             self.class_combo.addItem(display_name, class_name)
+
+    def init_ui(self) -> None:
+        """在原版 CTA 回测界面里插入“发布到 CTA 实时监控”按钮。"""
+        original_init_ui(self)
+
+        self.publish_monitor_button = QtWidgets.QPushButton("发布到 CTA 实时监控")
+        self.publish_monitor_button.setEnabled(False)
+        self.publish_monitor_button.setFixedHeight(self.publish_monitor_button.sizeHint().height() * 2)
+        self.publish_monitor_button.setToolTip("把最近一次成功完成的回测配置发布到 CTA 实时监控中心")
+        self.publish_monitor_button.clicked.connect(self.publish_to_alertcenter)
+        self._pending_publish_candidate = None
+        self._latest_publish_candidate = None
+
+        left_widget = self.layout().itemAt(0).widget()
+        left_hbox = left_widget.layout()
+        left_vbox = left_hbox.itemAt(0).layout()
+        left_vbox.insertWidget(3, self.publish_monitor_button)
+
+    def get_alertcenter_engine(self):
+        """读取 CTA 实时监控引擎，缺失时返回 None。"""
+        return self.main_engine.get_engine(AlertCenterApp.app_name)
+
+    def publish_to_alertcenter(self) -> None:
+        """把最近一次成功回测的策略配置发布到 CTA 实时监控中心。"""
+        candidate = getattr(self, "_latest_publish_candidate", None)
+        if not candidate:
+            QtWidgets.QMessageBox.information(self, "发布到 CTA 实时监控", "请先完成一次可发布的策略回测。")
+            return
+
+        class_name = str(candidate["class_name"])
+        if not is_publishable_monitor_strategy(class_name):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "发布到 CTA 实时监控",
+                f"{STRATEGY_DISPLAY_NAMES.get(class_name, class_name)} 目前还不支持直接发布到 CTA 实时监控中心。",
+            )
+            return
+
+        alert_engine = get_alertcenter_engine(self)
+        if alert_engine is None:
+            QtWidgets.QMessageBox.warning(self, "发布到 CTA 实时监控", "未找到 CTA 实时监控引擎，请确认应用已正确加载。")
+            return
+
+        if alert_engine.is_running():
+            QtWidgets.QMessageBox.warning(
+                self,
+                "发布到 CTA 实时监控",
+                "当前 CTA 实时监控正在运行，请先停止监控后再接收 CTA 回测发布。",
+            )
+            return
+
+        current_config = alert_engine.load_config()
+        options, recommend_index = build_publish_target_options(self, current_config, candidate)
+        option_labels = [label for label, _index in options]
+        selected_label, ok = QtWidgets.QInputDialog.getItem(
+            self,
+            "选择发布位置",
+            "请选择要写入 CTA 实时监控中心的目标位置：",
+            option_labels,
+            recommend_index,
+            False,
+        )
+        if not ok or not selected_label:
+            return
+
+        target_index = dict(options)[selected_label]
+        summary_text = build_publish_summary_text(candidate)
+        strategy_display = STRATEGY_DISPLAY_NAMES.get(class_name, class_name)
+        message_lines = [
+            "即将发布到 CTA 实时监控中心：",
+            f"股票：{candidate['vt_symbol']}",
+            f"周期：{candidate['interval']}",
+            f"策略：{strategy_display}",
+            f"参数：{candidate['params']}",
+            f"目标：{selected_label}",
+            f"回测摘要：{summary_text}",
+        ]
+        if current_config.symbol_configs and current_config.interval != candidate["interval"]:
+            message_lines.append("")
+            message_lines.append(
+                f"注意：当前监控中心是全局周期，确认后会把周期从 {current_config.interval} 切换为 {candidate['interval']}。"
+            )
+
+        result = QtWidgets.QMessageBox.question(
+            self,
+            "确认发布",
+            "\n".join(message_lines),
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.Yes,
+        )
+        if result != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            alert_engine.publish_from_backtest(
+                vt_symbol=str(candidate["vt_symbol"]),
+                interval=str(candidate["interval"]),
+                strategy_name=class_name,
+                params=dict(candidate["params"]),
+                target_index=int(target_index),
+                summary_text=summary_text,
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "发布到 CTA 实时监控", str(exc))
+            return
+
+        self.write_log(
+            "CTA 回测配置已发布到 CTA 实时监控："
+            f"{candidate['vt_symbol']} / {strategy_display} / {candidate['interval']}"
+        )
+
+    def process_backtesting_finished_event(self, event) -> None:
+        """回测完成后刷新图表，并生成“发布到实时监控”的候选配置。"""
+        original_process_backtesting_finished_event(self, event)
+
+        candidate = getattr(self, "_pending_publish_candidate", None)
+        if not candidate:
+            self.publish_monitor_button.setEnabled(False)
+            return
+
+        statistics = self.backtester_engine.get_result_statistics() or {}
+        candidate["statistics"] = dict(statistics)
+        self._latest_publish_candidate = candidate
+
+        class_name = str(candidate["class_name"])
+        if is_publishable_monitor_strategy(class_name):
+            self.publish_monitor_button.setEnabled(True)
+            self.publish_monitor_button.setToolTip(
+                "发布最近一次成功完成的回测配置到 CTA 实时监控中心"
+            )
+            self.write_log("当前回测结果已可发布到 CTA 实时监控。")
+        else:
+            self.publish_monitor_button.setEnabled(False)
+            self.publish_monitor_button.setToolTip("当前策略暂不支持发布到 CTA 实时监控中心")
+            self.write_log("当前策略暂不支持发布到 CTA 实时监控。")
 
     def load_backtesting_setting(self) -> None:
         """加载本地回测配置，并恢复双语策略名显示。"""
@@ -830,6 +1038,9 @@ def patch_backtester_manager() -> None:
 
         new_setting: dict = dialog.get_setting()
         self.settings[class_name] = new_setting
+        self._pending_publish_candidate = None
+        self._latest_publish_candidate = None
+        self.publish_monitor_button.setEnabled(False)
 
         result = self.backtester_engine.start_backtesting(
             class_name,
@@ -846,6 +1057,16 @@ def patch_backtester_manager() -> None:
         )
 
         if result:
+            self._pending_publish_candidate = {
+                "class_name": class_name,
+                "vt_symbol": vt_symbol,
+                "interval": interval,
+                "params": dict(new_setting),
+                "start": start,
+                "end": end,
+            }
+            self._latest_publish_candidate = None
+            self.publish_monitor_button.setEnabled(False)
             self.statistics_monitor.clear_data()
             self.chart.clear_data()
 
@@ -961,6 +1182,7 @@ def patch_backtester_manager() -> None:
 
     BacktesterManager.get_current_class_name = get_current_class_name
     BacktesterManager.find_class_index = find_class_index
+    BacktesterManager.init_ui = init_ui
     BacktesterManager.init_strategy_settings = init_strategy_settings
     BacktesterManager.sync_symbol_input = sync_symbol_input
     BacktesterManager.load_backtesting_setting = load_backtesting_setting
@@ -968,6 +1190,9 @@ def patch_backtester_manager() -> None:
     BacktesterManager.start_backtesting = start_backtesting
     BacktesterManager.start_optimization = start_optimization
     BacktesterManager.start_downloading = start_downloading
+    BacktesterManager.publish_to_alertcenter = publish_to_alertcenter
+    BacktesterManager.get_alertcenter_engine = get_alertcenter_engine
+    BacktesterManager.process_backtesting_finished_event = process_backtesting_finished_event
     BacktesterManager.edit_strategy_code = edit_strategy_code
     BacktesterManager.reload_strategy_class = reload_strategy_class
     BacktesterManager.write_log = write_log

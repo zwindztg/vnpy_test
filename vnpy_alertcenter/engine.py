@@ -18,10 +18,14 @@ from .core import (
     LogData,
     RecordData,
     RunnerStatusData,
+    SOURCE_CTA_PUBLISHED,
+    SymbolConfig,
     SymbolStateData,
+    find_enabled_symbol_conflicts,
     load_app_config,
     make_log,
     make_runner_status,
+    publish_symbol_config,
     read_recent_records,
     save_app_config,
     send_desktop_notification,
@@ -34,6 +38,7 @@ EVENT_ALERTCENTER_STATUS = "eAlertCenterStatus"
 EVENT_ALERTCENTER_RECORD = "eAlertCenterRecord"
 EVENT_ALERTCENTER_STATE = "eAlertCenterState"
 EVENT_ALERTCENTER_CHART = "eAlertCenterChart"
+EVENT_ALERTCENTER_CONFIG = "eAlertCenterConfig"
 
 
 class AlertCenterEngine(BaseEngine):
@@ -53,14 +58,54 @@ class AlertCenterEngine(BaseEngine):
         self.current_config = load_app_config(self.config_path)
         return self.current_config
 
-    def save_config(self, config: AppConfig) -> None:
-        """把当前配置写回 JSON。"""
+    def save_config(self, config: AppConfig, message: str = "配置已保存。") -> None:
+        """把当前配置写回 JSON，并通知已打开的监控窗口刷新。"""
         save_app_config(config, self.config_path)
         self.current_config = config
-        self.write_log("配置已保存。")
+        self.process_config(config)
+        if message:
+            self.write_log(message)
+
+    def publish_from_backtest(
+        self,
+        *,
+        vt_symbol: str,
+        interval: str,
+        strategy_name: str,
+        params: dict,
+        target_index: int,
+        summary_text: str = "",
+    ) -> AppConfig:
+        """接收 CTA 回测发布的一条策略配置，并写入监控中心配置。"""
+        if self.is_running():
+            raise RuntimeError("当前 CTA 实时监控正在运行，请先停止监控后再接收 CTA 回测发布。")
+
+        current = self.load_config()
+        published_config = publish_symbol_config(
+            current,
+            SymbolConfig(
+                vt_symbol=vt_symbol,
+                strategy_name=strategy_name,
+                params=params,
+                enabled=True,
+                source_state=SOURCE_CTA_PUBLISHED,
+            ),
+            interval=interval,
+            target_index=target_index,
+        )
+        summary_suffix = f"；回测摘要：{summary_text}" if summary_text else ""
+        self.save_config(
+            published_config,
+            message=(
+                f"已接收 CTA 回测发布：{vt_symbol} / {strategy_name} / {interval}"
+                f"{summary_suffix}"
+            ),
+        )
+        return published_config
 
     def start_alerting(self, config: AppConfig) -> None:
         """启动后台提醒线程。"""
+        self._raise_if_duplicate_enabled_symbols(config)
         with self._thread_lock:
             if self._thread and self._thread.is_alive():
                 self.write_log("提醒已在运行中，本次启动请求已忽略。")
@@ -93,6 +138,7 @@ class AlertCenterEngine(BaseEngine):
         """按指定时间执行单次历史回放测试。"""
         if self.is_running():
             raise RuntimeError("请先停止当前实时监控，再执行单次测试。")
+        self._raise_if_duplicate_enabled_symbols(config)
 
         self.current_config = config
         runner = AlertCenterRunner(
@@ -184,6 +230,10 @@ class AlertCenterEngine(BaseEngine):
         """把图表快照事件发给 GUI。"""
         self.event_engine.put(Event(EVENT_ALERTCENTER_CHART, data))
 
+    def process_config(self, config: AppConfig) -> None:
+        """把配置刷新事件发给 GUI，方便已打开窗口同步最新配置。"""
+        self.event_engine.put(Event(EVENT_ALERTCENTER_CONFIG, config))
+
     def write_log(self, message: str, source: str = "Engine", level: str = "INFO") -> None:
         """对外提供简单日志接口。"""
         self.process_log(make_log(level, source, message))
@@ -197,3 +247,18 @@ class AlertCenterEngine(BaseEngine):
             self._thread = None
             self._stop_event = None
             self._runner = None
+
+    def _raise_if_duplicate_enabled_symbols(self, config: AppConfig) -> None:
+        """引擎层也兜底拦截同股票多条启用，避免绕过 GUI 后直接跑出歧义状态。"""
+        conflicts = find_enabled_symbol_conflicts(config)
+        if not conflicts:
+            return
+
+        conflict_text = "；".join(
+            f"{vt_symbol} 位于第 {','.join(str(row) for row in rows)} 行"
+            for vt_symbol, rows in conflicts.items()
+        )
+        raise RuntimeError(
+            "CTA 实时监控中心暂不支持同一股票同时运行多条策略，请先处理重复启用项："
+            f"{conflict_text}"
+        )

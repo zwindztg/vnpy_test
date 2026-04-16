@@ -60,6 +60,7 @@ class AlertChartViewTest(unittest.TestCase):
             ),
         )
         return ChartSnapshotData(
+            config_id="test-chart-view",
             vt_symbol="601869.SSE",
             strategy_name="BasicAlertStrategy",
             interval=interval,

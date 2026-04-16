@@ -38,7 +38,7 @@ def make_bar(
 class ChartMarkerBuilderTest(unittest.TestCase):
     """验证图表理论买卖点的生成口径。"""
 
-    def test_basic_strategy_marks_every_breakout_bar(self) -> None:
+    def test_basic_strategy_only_marks_breakout_state_transition(self) -> None:
         bars = [
             make_bar(0, 9.0, high_price=9.2, low_price=8.8),
             make_bar(1, 9.4, high_price=9.5, low_price=9.1),
@@ -57,8 +57,32 @@ class ChartMarkerBuilderTest(unittest.TestCase):
         )
 
         breakout_markers = [marker for marker in markers if marker.rule_name == "breakout"]
-        self.assertEqual(2, len(breakout_markers))
-        self.assertEqual([bars[2].dt, bars[3].dt], [marker.dt for marker in breakout_markers])
+        self.assertEqual(1, len(breakout_markers))
+        self.assertEqual([bars[2].dt], [marker.dt for marker in breakout_markers])
+
+    def test_basic_strategy_marks_stop_loss_only_on_first_break(self) -> None:
+        bars = [
+            make_bar(0, 10.0, high_price=10.2, low_price=9.8),
+            make_bar(1, 9.7, high_price=9.9, low_price=9.6),
+            make_bar(2, 8.4, high_price=8.6, low_price=8.2),
+            make_bar(3, 8.2, high_price=8.4, low_price=8.0),
+            make_bar(4, 8.8, high_price=9.0, low_price=8.6),
+            make_bar(5, 8.3, high_price=8.5, low_price=8.1),
+        ]
+        markers = build_chart_markers(
+            BASIC_ALERT_STRATEGY,
+            {
+                "breakout_price": 11.0,
+                "stop_loss_price": 8.5,
+                "fast_ma_window": 2,
+                "slow_ma_window": 3,
+            },
+            bars,
+        )
+
+        stop_markers = [marker for marker in markers if marker.rule_name == "stop_loss"]
+        self.assertEqual(2, len(stop_markers))
+        self.assertEqual([bars[2].dt, bars[5].dt], [marker.dt for marker in stop_markers])
 
     def test_ma_strategy_only_marks_cross_events(self) -> None:
         bars = [

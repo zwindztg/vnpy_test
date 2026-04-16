@@ -34,6 +34,7 @@ from ..core import (
     get_strategy_definition,
     get_strategy_display_name,
     normalize_strategy_name,
+    update_symbol_enabled_state,
 )
 from ..engine import (
     APP_NAME,
@@ -716,7 +717,9 @@ class AlertCenterWidget(QtWidgets.QWidget):
             row_widgets.vt_symbol.textEdited.connect(
                 lambda _text, row_index=row: self.on_symbol_text_edited(row_index)
             )
-            row_widgets.enabled.toggled.connect(lambda _checked: self.refresh_summary_metrics())
+            row_widgets.enabled.toggled.connect(
+                lambda checked, row_index=row: self.on_enabled_toggled(row_index, checked)
+            )
             row_widgets.vt_symbol.textChanged.connect(lambda _text: self.refresh_summary_metrics())
             self.set_row_source_state(row_widgets, SOURCE_MANUAL)
             self.apply_strategy_to_row(row_widgets, BASIC_ALERT_STRATEGY)
@@ -1091,6 +1094,29 @@ class AlertCenterWidget(QtWidgets.QWidget):
             return
         row_widgets = self.row_widgets[row_index]
         self.mark_row_modified(row_widgets)
+
+    def on_enabled_toggled(self, row_index: int, checked: bool) -> None:
+        """勾选状态变化时只自动保存启用开关，避免用户每次重开都要重新点。"""
+        self.refresh_summary_metrics()
+        if self.source_tracking_suspended:
+            return
+
+        row_widgets = self.row_widgets[row_index]
+        if not row_widgets.config_id:
+            # 新增但尚未正式保存的空白/临时行，不自动落盘，避免把半成品配置悄悄写入本地。
+            return
+
+        updated_config = update_symbol_enabled_state(
+            self.current_config,
+            config_id=row_widgets.config_id,
+            enabled=checked,
+        )
+        if updated_config == self.current_config:
+            return
+
+        self.current_config = updated_config
+        # 只落盘启用状态，不广播整份配置刷新，避免把用户尚未保存的其他表单改动覆盖掉。
+        self.alert_engine.save_config(updated_config, message="", broadcast=False)
 
     def refresh_basic_price_defaults(self, row_widgets: SymbolRowWidgets) -> None:
         """把基础提醒策略的突破价/止损价更新为最近交易日开盘价的正负 2%。"""

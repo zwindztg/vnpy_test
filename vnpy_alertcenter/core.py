@@ -474,7 +474,7 @@ def build_basic_chart_markers(
     params: dict[str, ParamValue],
     bars: list[AlertBar],
 ) -> list[ChartMarkerData]:
-    """基础提醒策略按阈值连续打点，并补上均线金叉事件。"""
+    """基础提醒策略按状态切换打点，并补上均线金叉事件。"""
     if not bars:
         return []
 
@@ -487,9 +487,15 @@ def build_basic_chart_markers(
     close_series = pd.Series([bar.close_price for bar in bars], dtype="float64")
     fast_ma = close_series.rolling(fast_ma_window).mean()
     slow_ma = close_series.rolling(slow_ma_window).mean()
+    previous_breakout_active = False
+    previous_stop_loss_active = False
 
     for index, bar in enumerate(bars):
-        if bar.close_price >= breakout_price:
+        breakout_active = bar.close_price >= breakout_price
+        stop_loss_active = bar.close_price <= stop_loss_price
+
+        # 图表层改成边界触发打点，避免 1m 下每根满足条件都重复打标导致界面过密。
+        if breakout_active and not previous_breakout_active:
             markers.append(
                 make_chart_marker(
                     dt=bar.dt,
@@ -502,7 +508,8 @@ def build_basic_chart_markers(
                     ),
                 )
             )
-        if bar.close_price <= stop_loss_price:
+        # 止损卖点同样只在首次跌破时打一次，后续连续弱势 bar 不再重复刷满图表。
+        if stop_loss_active and not previous_stop_loss_active:
             markers.append(
                 make_chart_marker(
                     dt=bar.dt,
@@ -515,6 +522,9 @@ def build_basic_chart_markers(
                     ),
                 )
             )
+
+        previous_breakout_active = breakout_active
+        previous_stop_loss_active = stop_loss_active
 
         if index < 1:
             continue
@@ -1490,6 +1500,47 @@ def publish_symbol_config(
 
     return AppConfig(
         interval=normalize_interval(interval),
+        poll_seconds=current_config.poll_seconds,
+        adjust=current_config.adjust,
+        cooldown_seconds=current_config.cooldown_seconds,
+        alert_history_path=current_config.alert_history_path,
+        notification_enabled=current_config.notification_enabled,
+        symbol_configs=tuple(symbol_configs),
+    )
+
+
+def update_symbol_enabled_state(
+    current_config: AppConfig,
+    *,
+    config_id: str,
+    enabled: bool,
+) -> AppConfig:
+    """只更新某条已存在监控配置的启用状态，避免自动保存时误写其他表单改动。"""
+    target_config_id = normalize_config_id(config_id)
+    updated = False
+    symbol_configs: list[SymbolConfig] = []
+
+    for symbol in current_config.symbol_configs[:MAX_SYMBOL_COUNT]:
+        if symbol.config_id == target_config_id:
+            symbol_configs.append(
+                SymbolConfig(
+                    vt_symbol=symbol.vt_symbol,
+                    strategy_name=symbol.strategy_name,
+                    params=symbol.params,
+                    enabled=bool(enabled),
+                    source_state=symbol.source_state,
+                    config_id=symbol.config_id,
+                )
+            )
+            updated = True
+        else:
+            symbol_configs.append(symbol)
+
+    if not updated:
+        return current_config
+
+    return AppConfig(
+        interval=current_config.interval,
         poll_seconds=current_config.poll_seconds,
         adjust=current_config.adjust,
         cooldown_seconds=current_config.cooldown_seconds,

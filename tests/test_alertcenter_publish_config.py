@@ -11,6 +11,7 @@ from vnpy_alertcenter.core import (
     find_enabled_symbol_conflicts,
     parse_symbol_configs,
     publish_symbol_config,
+    update_symbol_enabled_state,
 )
 
 
@@ -162,6 +163,35 @@ class PublishSymbolConfigTest(unittest.TestCase):
         )
 
         self.assertEqual({"601869.SSE": (1, 2)}, find_enabled_symbol_conflicts(config))
+
+    def test_update_symbol_enabled_state_only_changes_enabled_flag(self) -> None:
+        first = SymbolConfig(
+            vt_symbol="601869.SSE",
+            strategy_name="LessonAShareLongOnlyStrategy",
+            params={"fast_window": 5, "slow_window": 20},
+            enabled=True,
+            source_state=SOURCE_CTA_PUBLISHED,
+            config_id="cfg-1",
+        )
+        second = SymbolConfig(
+            vt_symbol="600000.SSE",
+            strategy_name="LessonDonchianAShareStrategy",
+            params={"entry_window": 20, "exit_window": 10},
+            enabled=False,
+            source_state=SOURCE_MANUAL,
+            config_id="cfg-2",
+        )
+        config = self.make_config(first, second)
+
+        updated = update_symbol_enabled_state(config, config_id="cfg-1", enabled=False)
+
+        self.assertFalse(updated.symbol_configs[0].enabled)
+        self.assertEqual(first.vt_symbol, updated.symbol_configs[0].vt_symbol)
+        self.assertEqual(first.strategy_name, updated.symbol_configs[0].strategy_name)
+        self.assertEqual(first.params, updated.symbol_configs[0].params)
+        self.assertEqual(first.source_state, updated.symbol_configs[0].source_state)
+        self.assertEqual(first.config_id, updated.symbol_configs[0].config_id)
+        self.assertEqual(second, updated.symbol_configs[1])
 
 
 if __name__ == "__main__":

@@ -58,11 +58,18 @@ class AlertCenterEngine(BaseEngine):
         self.current_config = load_app_config(self.config_path)
         return self.current_config
 
-    def save_config(self, config: AppConfig, message: str = "配置已保存。") -> None:
-        """把当前配置写回 JSON，并通知已打开的监控窗口刷新。"""
+    def save_config(
+        self,
+        config: AppConfig,
+        message: str = "配置已保存。",
+        *,
+        broadcast: bool = True,
+    ) -> None:
+        """把当前配置写回 JSON，并按需通知已打开的监控窗口刷新。"""
         save_app_config(config, self.config_path)
         self.current_config = config
-        self.process_config(config)
+        if broadcast:
+            self.process_config(config)
         if message:
             self.write_log(message)
 

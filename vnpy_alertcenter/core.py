@@ -179,13 +179,14 @@ class RuleRuntimeState:
 
 @dataclass(frozen=True)
 class ChartBarData:
-    """图表控件使用的单根 K 线数据。"""
+    """图表控件使用的单根 K线数据。"""
 
     dt: datetime
     open_price: float
     high_price: float
     low_price: float
     close_price: float
+    volume: float
 
 
 @dataclass(frozen=True)
@@ -419,7 +420,7 @@ def build_chart_bar_data(
     bars: list[AlertBar],
     limit: int | None = None,
 ) -> tuple[ChartBarData, ...]:
-    """把原始 K 线转换成图表控件使用的轻量数据结构。"""
+    """把原始 K线转换成图表控件使用的轻量数据结构，并保留成交量。"""
     selected_bars = bars[-limit:] if limit else bars
     return tuple(
         ChartBarData(
@@ -428,6 +429,7 @@ def build_chart_bar_data(
             high_price=bar.high_price,
             low_price=bar.low_price,
             close_price=bar.close_price,
+            volume=bar.volume,
         )
         for bar in selected_bars
     )

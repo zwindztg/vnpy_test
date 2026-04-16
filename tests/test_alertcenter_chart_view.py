@@ -3,7 +3,14 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta
 
-from vnpy_alertcenter.core import CHINA_TZ, ChartBarData, ChartMarkerData, ChartSnapshotData
+from vnpy_alertcenter.core import (
+    CHINA_TZ,
+    AlertBar,
+    ChartBarData,
+    ChartMarkerData,
+    ChartSnapshotData,
+    build_chart_bar_data,
+)
 from vnpy_alertcenter.ui.chart_view import (
     apply_drag_pan,
     apply_pan_left,
@@ -20,7 +27,7 @@ from vnpy_alertcenter.ui.chart_view import (
 )
 
 
-def make_chart_bar(base_dt: datetime, index: int, close_price: float) -> ChartBarData:
+def make_chart_bar(base_dt: datetime, index: int, close_price: float, volume: float = 100.0) -> ChartBarData:
     """按固定分钟间隔生成测试用图表 bar。"""
     current_dt = base_dt + timedelta(minutes=5 * index)
     return ChartBarData(
@@ -29,6 +36,7 @@ def make_chart_bar(base_dt: datetime, index: int, close_price: float) -> ChartBa
         high_price=close_price + 0.8,
         low_price=close_price - 1.0,
         close_price=close_price,
+        volume=volume,
     )
 
 
@@ -125,6 +133,23 @@ class AlertChartViewTest(unittest.TestCase):
 
         self.assertEqual(("601869.SSE", "d", snapshot.reference_time.date()), get_view_key(snapshot, True))
         self.assertFalse(zoom_enabled)
+
+    def test_build_chart_bar_data_keeps_volume(self) -> None:
+        bars = [
+            AlertBar(
+                dt=datetime(2026, 4, 15, 9, 30, tzinfo=CHINA_TZ),
+                open_price=10.0,
+                close_price=10.5,
+                high_price=10.8,
+                low_price=9.8,
+                volume=12345.0,
+            )
+        ]
+
+        chart_bars = build_chart_bar_data(bars)
+
+        self.assertEqual(1, len(chart_bars))
+        self.assertEqual(12345.0, chart_bars[0].volume)
 
 
 if __name__ == "__main__":

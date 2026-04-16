@@ -34,6 +34,8 @@ class AlertChartWidget(QtWidgets.QWidget):
 
     TIME_AXIS_HEIGHT = 34.0
     MIN_VISIBLE_BARS = 12
+    VOLUME_PANEL_MIN_HEIGHT = 56.0
+    VOLUME_INFO_HEIGHT = 24.0
 
     def __init__(
         self,
@@ -41,12 +43,14 @@ class AlertChartWidget(QtWidgets.QWidget):
         *,
         interactive: bool = False,
         intraday_only: bool = False,
+        show_volume_panel: bool = False,
     ) -> None:
         super().__init__(parent)
         self.snapshot: ChartSnapshotData | None = None
         self.placeholder_text: str = "暂无图表数据，请先执行单次测试或启动监控"
         self.interactive = interactive
         self.intraday_only = intraday_only
+        self.show_volume_panel = show_volume_panel
         self.visible_start: int = 0
         self.visible_count: int = 0
         self.dragging: bool = False
@@ -291,7 +295,7 @@ class AlertChartWidget(QtWidgets.QWidget):
         event.accept()
 
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:      # noqa: N802
-        """用 QPainter 画出最简版 K 线、买卖点和时间轴。"""
+        """用 QPainter 画出最简版 K线、买卖点、成交量和时间轴。"""
         super().paintEvent(event)
 
         painter = QtGui.QPainter(self)
@@ -356,10 +360,26 @@ class AlertChartWidget(QtWidgets.QWidget):
         bars: list[ChartBarData],
         markers: list[ChartMarkerData],
     ) -> None:
-        """绘制 K 线主体、理论买卖点和底部时间轴。"""
+        """绘制价格主图、成交量副图和底部时间轴。"""
         axis_height = min(self.TIME_AXIS_HEIGHT, max(22.0, rect.height() * 0.16))
-        price_rect = QtCore.QRectF(rect.left(), rect.top(), rect.width(), rect.height() - axis_height)
-        time_rect = QtCore.QRectF(rect.left(), price_rect.bottom(), rect.width(), axis_height)
+        if self.show_volume_panel:
+            axis_height = min(self.TIME_AXIS_HEIGHT, max(24.0, rect.height() * 0.12))
+            panel_gap = 10.0
+            available_height = max(0.0, rect.height() - axis_height - panel_gap)
+            volume_height = max(self.VOLUME_PANEL_MIN_HEIGHT, available_height * 0.23)
+            price_height = max(80.0, available_height - volume_height)
+            volume_height = max(self.VOLUME_PANEL_MIN_HEIGHT, available_height - price_height)
+            price_rect = QtCore.QRectF(rect.left(), rect.top(), rect.width(), price_height)
+            volume_rect = QtCore.QRectF(
+                rect.left(),
+                price_rect.bottom() + panel_gap,
+                rect.width(),
+                max(0.0, rect.bottom() - axis_height - (price_rect.bottom() + panel_gap)),
+            )
+        else:
+            price_rect = QtCore.QRectF(rect.left(), rect.top(), rect.width(), rect.height() - axis_height)
+            volume_rect = QtCore.QRectF()
+        time_rect = QtCore.QRectF(rect.left(), rect.bottom() - axis_height, rect.width(), axis_height)
 
         marker_prices = [marker.price for marker in markers]
         high_prices = [bar.high_price for bar in bars]
@@ -406,6 +426,9 @@ class AlertChartWidget(QtWidgets.QWidget):
             painter.setPen(QtGui.QPen(color, 1))
             painter.setBrush(color)
             painter.drawRect(body_rect)
+
+        if self.show_volume_panel and volume_rect.height() > 20:
+            self.draw_volume_panel(painter, volume_rect, bars, step_x, candle_width)
 
         marker_map: dict[int, list[ChartMarkerData]] = defaultdict(list)
         for marker in markers:
@@ -503,6 +526,103 @@ class AlertChartWidget(QtWidgets.QWidget):
                 int(QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignTop),
                 label,
             )
+
+    def draw_volume_panel(
+        self,
+        painter: QtGui.QPainter,
+        rect: QtCore.QRectF,
+        bars: list[ChartBarData],
+        step_x: float,
+        candle_width: float,
+    ) -> None:
+        """绘制成交量副图，帮助在详情窗口里快速判断放量与缩量。"""
+        border_pen = QtGui.QPen(QtGui.QColor("#223447"), 1)
+        painter.setPen(border_pen)
+        # 外框只画边，不沿用上一根 K线的填充色，否则整个成交量区会被刷成绿色或红色。
+        painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect, 10, 10)
+
+        info_rect = QtCore.QRectF(
+            rect.left() + 10,
+            rect.top() + 4,
+            max(0.0, rect.width() - 20),
+            self.VOLUME_INFO_HEIGHT,
+        )
+        self.draw_volume_info(painter, info_rect, bars[-1].volume if bars else 0.0)
+
+        content_rect = QtCore.QRectF(
+            rect.left(),
+            info_rect.bottom() + 4,
+            rect.width(),
+            max(0.0, rect.bottom() - info_rect.bottom() - 10),
+        )
+        max_volume = max((bar.volume for bar in bars), default=0.0)
+        if max_volume <= 0 or content_rect.height() <= 10:
+            return
+
+        grid_pen = QtGui.QPen(QtGui.QColor("#1a2a3a"), 1, QtCore.Qt.PenStyle.DashLine)
+        for index in range(3):
+            ratio = index / 2
+            y = content_rect.top() + content_rect.height() * ratio
+            painter.setPen(grid_pen)
+            painter.drawLine(QtCore.QPointF(content_rect.left(), y), QtCore.QPointF(content_rect.right(), y))
+
+        for index, bar in enumerate(bars):
+            x_center = content_rect.left() + step_x * (index + 0.5)
+            volume_ratio = bar.volume / max_volume if max_volume > 0 else 0.0
+            bar_height = max(1.5, content_rect.height() * volume_ratio)
+            top_y = content_rect.bottom() - bar_height
+            is_up = bar.close_price >= bar.open_price
+            color = QtGui.QColor("#16a34a" if is_up else "#ef4444")
+            volume_width = max(3.0, min(candle_width * 0.78, step_x * 0.82))
+            volume_rect = QtCore.QRectF(
+                x_center - volume_width / 2,
+                top_y,
+                volume_width,
+                bar_height,
+            )
+            painter.setPen(QtGui.QPen(color, 1))
+            painter.setBrush(color)
+            painter.drawRect(volume_rect)
+
+    def draw_volume_info(
+        self,
+        painter: QtGui.QPainter,
+        rect: QtCore.QRectF,
+        latest_volume: float,
+    ) -> None:
+        """在成交量副图顶部显示一条轻量量能摘要，避免用户只看柱子不知当前量级。"""
+        label_font = painter.font()
+        label_font.setPointSize(8)
+        label_font.setBold(True)
+        value_font = QtGui.QFont(label_font)
+        value_font.setBold(False)
+
+        painter.setFont(label_font)
+        painter.setPen(QtGui.QColor("#aab8c8"))
+        painter.drawText(
+            QtCore.QRectF(rect.left(), rect.top(), 52, rect.height()),
+            int(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter),
+            "成交量",
+        )
+
+        painter.setFont(value_font)
+        painter.setPen(QtGui.QColor("#e5edf7"))
+        painter.drawText(
+            QtCore.QRectF(rect.left() + 56, rect.top(), max(0.0, rect.width() - 56), rect.height()),
+            int(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter),
+            self.format_volume_value(latest_volume),
+        )
+
+    @staticmethod
+    def format_volume_value(volume: float) -> str:
+        """把成交量格式化成更符合 A股阅读习惯的“手 / 万手”文本。"""
+        abs_volume = abs(volume)
+        if abs_volume >= 10000:
+            return f"{volume / 10000:.2f}万手"
+        if isclose(volume, round(volume)):
+            return f"{volume:.0f}手"
+        return f"{volume:.2f}手"
 
     def build_time_tick_indices(self, bars: list[ChartBarData], axis_width: float) -> list[int]:
         """按宽度挑选时间刻度，并优先保留跨日节点和最右侧最新时间。"""
@@ -627,7 +747,11 @@ class AlertKLineDetailWindow(QtWidgets.QWidget):
         self.close_shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.close_shortcut.activated.connect(self.close)
 
-        self.chart_widget = AlertChartWidget(interactive=True, intraday_only=True)
+        self.chart_widget = AlertChartWidget(
+            interactive=True,
+            intraday_only=True,
+            show_volume_panel=True,
+        )
         self.zoom_in_button = QtWidgets.QPushButton("放大")
         self.zoom_out_button = QtWidgets.QPushButton("缩小")
         self.reset_button = QtWidgets.QPushButton("还原")

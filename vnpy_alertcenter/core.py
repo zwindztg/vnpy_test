@@ -213,6 +213,7 @@ class ChartSnapshotData:
     bars: tuple[ChartBarData, ...]
     markers: tuple[ChartMarkerData, ...]
     reference_time: datetime
+    default_visible_count: int = 0
 
 
 @dataclass
@@ -2197,14 +2198,13 @@ class SymbolAlertService:
         """拉取最近一批分钟数据，并取已完成 K 线。"""
         symbol, exchange = split_vt_symbol(self.config.vt_symbol)
         interval_minutes = get_interval_minutes(self.app_config.interval)
-        period = str(interval_minutes)
         start_dt = now - timedelta(days=5)
         end_dt = now + timedelta(minutes=1)
 
         last_remote_error: Exception | None = None
 
         try:
-            # 分钟线优先走 pytdx，免费且在当前机器上比东财接口更稳定。
+            # 分钟线优先走 pytdx；当前项目不再回退到东财，避免分钟口径影响图表判断。
             df, source_name = fetch_pytdx_minute_dataframe(
                 symbol=symbol,
                 exchange=exchange,
@@ -2223,51 +2223,24 @@ class SymbolAlertService:
         except Exception as exc:
             last_remote_error = exc
 
-        try:
-            # 东财作为第二优先级兜底，适合 pytdx 暂时失联时继续尝试。
-            with temporary_proxy_bypass():
-                df = fetch_eastmoney_minute_dataframe(
-                    symbol=symbol,
-                    period=period,
-                    adjust=self.app_config.adjust,
-                    start_dt=start_dt,
-                    end_dt=end_dt,
-                )
-            self.set_data_source("东财分钟线")
-        except Exception as exc:
-            if last_remote_error is not None:
-                exc = ValueError(f"pytdx 失败：{last_remote_error}；东财失败：{exc}")
-            if not allow_local_fallback:
-                raise
+        if not allow_local_fallback:
+            self.set_data_source("pytdx失败")
+            raise ValueError(f"pytdx 失败：{last_remote_error}") from last_remote_error
 
-            local_bars, local_interval = self.fetch_local_database_bars(now)
-            if local_bars:
-                self.set_data_source(f"本地{local_interval}")
-                self.log(
-                    "INFO",
-                    (
-                        f"远程分钟线获取失败，单次测试已回退到本地 {local_interval} 数据：{exc}"
-                    ),
-                )
-                return local_bars
-            self.set_data_source("远程失败")
-            raise ValueError(f"{exc}；同时本地数据库中也没有可用历史数据。") from exc
+        local_bars, local_interval = self.fetch_local_database_bars(now)
+        if local_bars:
+            self.set_data_source(f"本地{local_interval}")
+            self.log(
+                "INFO",
+                f"pytdx 分钟线获取失败，单次测试已回退到本地 {local_interval} 数据：{last_remote_error}",
+            )
+            return local_bars
 
-        if df is None or df.empty:
-            if not self.state.data_source:
-                self.set_data_source("无数据")
-            return []
-
-        parsed = self.parse_bars(df)
-        if not parsed:
-            return []
-
-        return filter_completed_bars(
-            parsed,
-            now,
-            interval_minutes,
-            timestamp_mode="open",
-        )
+        self.set_data_source("远程失败")
+        requested_interval = normalize_interval(self.app_config.interval)
+        raise ValueError(
+            f"pytdx 失败：{last_remote_error}；同时本地数据库中也没有可用的 {requested_interval} 历史数据。"
+        ) from last_remote_error
 
     def fetch_local_database_bars(self, now: datetime) -> tuple[list[AlertBar], str]:
         """单次测试失败时，优先回退到项目本地数据库。"""
@@ -2276,41 +2249,33 @@ class SymbolAlertService:
         if not database_path.exists():
             return [], ""
 
-        interval_candidates = [normalize_interval(self.app_config.interval), "d"]
-        seen: set[str] = set()
-        for interval in interval_candidates:
-            if interval in seen:
-                continue
-            seen.add(interval)
+        interval = normalize_interval(self.app_config.interval)
+        lookback_days = 400 if interval == "d" else 10
+        start_dt = now - timedelta(days=lookback_days)
+        rows = self.query_local_bar_rows(
+            database_path=database_path,
+            symbol=symbol,
+            exchange=exchange,
+            interval=interval,
+            start_dt=start_dt,
+            end_dt=now,
+        )
+        if not rows:
+            return [], ""
 
-            lookback_days = 400 if interval == "d" else 10
-            start_dt = now - timedelta(days=lookback_days)
-            rows = self.query_local_bar_rows(
-                database_path=database_path,
-                symbol=symbol,
-                exchange=exchange,
-                interval=interval,
-                start_dt=start_dt,
-                end_dt=now,
+        bars = [
+            AlertBar(
+                dt=ensure_china_tz(datetime.fromisoformat(str(row[0]))),
+                open_price=float(row[1]),
+                close_price=float(row[4]),
+                high_price=float(row[2]),
+                low_price=float(row[3]),
+                volume=float(row[5]),
             )
-            if not rows:
-                continue
-
-            bars = [
-                AlertBar(
-                    dt=ensure_china_tz(datetime.fromisoformat(str(row[0]))),
-                    open_price=float(row[1]),
-                    close_price=float(row[4]),
-                    high_price=float(row[2]),
-                    low_price=float(row[3]),
-                    volume=float(row[5]),
-                )
-                for row in rows
-            ]
-            bars.sort(key=lambda item: item.dt)
-            return bars, interval
-
-        return [], ""
+            for row in rows
+        ]
+        bars.sort(key=lambda item: item.dt)
+        return bars, interval
 
     def query_local_bar_rows(
         self,
@@ -2349,7 +2314,8 @@ class SymbolAlertService:
         close_column = find_first_existing_column(df, ["收盘", "close"])
         high_column = find_first_existing_column(df, ["最高", "high"])
         low_column = find_first_existing_column(df, ["最低", "low"])
-        volume_column = find_first_existing_column(df, ["成交量", "volume"])
+        # pytdx 的分钟线字段名是 vol，这里一起兼容，避免副图始终显示 0 手。
+        volume_column = find_first_existing_column(df, ["成交量", "volume", "vol"])
 
         if time_column is None or close_column is None:
             raise ValueError("返回数据缺少时间列或收盘价列，无法解析 K 线。")
@@ -2406,7 +2372,14 @@ class SymbolAlertService:
         if not self.chart_enabled or not bars:
             return
 
-        visible_bars = bars[-120:]
+        default_visible_count = 0
+        if self.app_config.interval == "1m":
+            # 1m 详情窗口需要保留当天完整数据，默认先看最后 2 小时，左拖后还能回看上午。
+            latest_trade_date = bars[-1].dt.date()
+            visible_bars = [bar for bar in bars if bar.dt.date() == latest_trade_date]
+            default_visible_count = min(120, len(visible_bars))
+        else:
+            visible_bars = bars[-120:]
         start_dt = visible_bars[0].dt
         visible_bar_data = build_chart_bar_data(visible_bars)
         theoretical_markers = build_chart_markers(
@@ -2424,6 +2397,7 @@ class SymbolAlertService:
             bars=visible_bar_data,
             markers=tuple(marker for marker in theoretical_markers if marker.dt >= start_dt),
             reference_time=reference_time,
+            default_visible_count=default_visible_count,
         )
         self.chart_callback(snapshot)
 

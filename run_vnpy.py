@@ -82,6 +82,16 @@ PROJECT_PROXY_ENV_KEYS: tuple[str, ...] = (
 )
 
 
+class CustomIntervalProxy:
+    """兼容 vnpy_sqlite overview 里未被原生枚举覆盖的分钟周期。"""
+
+    def __init__(self, value: str) -> None:
+        self.value = str(value)
+
+    def __repr__(self) -> str:
+        return f"CustomIntervalProxy({self.value!r})"
+
+
 def disable_project_proxy_env() -> list[str]:
     """仅在当前项目进程里清理代理变量，不影响系统和 Codex 对话。"""
     cleared_keys: list[str] = []
@@ -417,6 +427,42 @@ def cleanup_database_storage() -> None:
         )
         if deleted:
             print(f"压缩数据库体积：删除Tick数据 {overview.symbol}.{overview.exchange.value} {deleted}条")
+
+
+def patch_sqlite_bar_overview() -> None:
+    """让 vnpy_sqlite 在读取自定义分钟周期 overview 时不要直接崩溃。"""
+    from vnpy.trader.constant import Exchange, Interval
+    import vnpy_sqlite.sqlite_database as sqlite_database
+
+    if getattr(sqlite_database.SqliteDatabase, "_vnpy_test_bar_overview_patched", False):
+        return
+
+    original_get_bar_overview = sqlite_database.SqliteDatabase.get_bar_overview
+
+    def safe_get_bar_overview(self):
+        try:
+            return original_get_bar_overview(self)
+        except ValueError as exc:
+            if "valid Interval" not in str(exc):
+                raise
+
+            data_count = sqlite_database.DbBarData.select().count()
+            overview_count = sqlite_database.DbBarOverview.select().count()
+            if data_count and not overview_count:
+                self.init_bar_overview()
+
+            overviews = []
+            for overview in sqlite_database.DbBarOverview.select():
+                overview.exchange = Exchange(overview.exchange)
+                try:
+                    overview.interval = Interval(overview.interval)
+                except ValueError:
+                    overview.interval = CustomIntervalProxy(str(overview.interval))
+                overviews.append(overview)
+            return overviews
+
+    sqlite_database.SqliteDatabase.get_bar_overview = safe_get_bar_overview
+    sqlite_database.SqliteDatabase._vnpy_test_bar_overview_patched = True
 
 
 def patch_backtester_engine() -> None:
@@ -766,6 +812,16 @@ def patch_backtester_manager() -> None:
             f"总收益 {total_return} / 最大回撤 {max_dd} / 胜率 {win_rate}"
         )
 
+    def build_publish_runtime_note(candidate: dict, published_at: datetime) -> str:
+        """构造只在当前运行期保留的 CTA 发布摘要，用于来源 tooltip 和日志。"""
+        summary_text = build_publish_summary_text(candidate)
+        strategy_display = STRATEGY_DISPLAY_NAMES.get(str(candidate["class_name"]), str(candidate["class_name"]))
+        return (
+            f"发布时间：{published_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"来源策略：{strategy_display}\n"
+            f"回测摘要：{summary_text}"
+        )
+
     def build_publish_target_options(self, current_config, candidate: dict) -> tuple[list[tuple[str, int]], int]:
         """根据当前监控配置生成可选发布目标，并返回推荐项索引。"""
         options: list[tuple[str, int]] = []
@@ -877,7 +933,9 @@ def patch_backtester_manager() -> None:
             return
 
         target_index = dict(options)[selected_label]
+        published_at = datetime.now()
         summary_text = build_publish_summary_text(candidate)
+        runtime_note = build_publish_runtime_note(candidate, published_at)
         strategy_display = STRATEGY_DISPLAY_NAMES.get(class_name, class_name)
         message_lines = [
             "即将发布到 CTA 实时监控中心：",
@@ -886,6 +944,7 @@ def patch_backtester_manager() -> None:
             f"策略：{strategy_display}",
             f"参数：{candidate['params']}",
             f"目标：{selected_label}",
+            f"发布时间：{published_at.strftime('%Y-%m-%d %H:%M:%S')}",
             f"回测摘要：{summary_text}",
             "规则：同一股票可保留多个候选配置，但同一时刻只能启用一条。",
         ]
@@ -913,6 +972,7 @@ def patch_backtester_manager() -> None:
                 params=dict(candidate["params"]),
                 target_index=int(target_index),
                 summary_text=summary_text,
+                runtime_note=runtime_note,
             )
         except Exception as exc:
             QtWidgets.QMessageBox.warning(self, "发布到 CTA 实时监控", str(exc))
@@ -920,7 +980,8 @@ def patch_backtester_manager() -> None:
 
         self.write_log(
             "CTA 回测配置已发布到 CTA 实时监控："
-            f"{candidate['vt_symbol']} / {strategy_display} / {candidate['interval']}"
+            f"{candidate['vt_symbol']} / {strategy_display} / {candidate['interval']} / "
+            f"{published_at.strftime('%Y-%m-%d %H:%M:%S')} / {summary_text}"
         )
 
     def process_backtesting_finished_event(self, event) -> None:
@@ -1368,6 +1429,7 @@ def main() -> int:
 
     ensure_vnpy_settings()
     ensure_backtester_settings()
+    patch_sqlite_bar_overview()
     cleanup_database_storage()
     sync_local_strategies()
     sync_local_packages()

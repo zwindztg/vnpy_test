@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from enum import Enum
+from math import isclose
 from pathlib import Path
 from threading import Event as ThreadEvent
 from typing import Callable, TypeAlias
@@ -48,7 +49,7 @@ CHINA_TZ = ZoneInfo("Asia/Shanghai")
 MAX_SYMBOL_COUNT = 3
 DEFAULT_CONFIG_PATH = BASE_DIR / "config" / "akshare_realtime_alert.json"
 DEFAULT_HISTORY_PATH = BASE_DIR / "logs" / "akshare_realtime_alerts.csv"
-DEFAULT_INTERVAL = "5m"
+DEFAULT_INTERVAL = "1m"
 DEFAULT_POLL_SECONDS = 20
 DEFAULT_ADJUST = "qfq"
 DEFAULT_COOLDOWN_SECONDS = 300
@@ -234,6 +235,22 @@ class ChartSnapshotData:
     markers: tuple[ChartMarkerData, ...]
     reference_time: datetime
     default_visible_count: int = 0
+
+
+@dataclass(frozen=True)
+class MinuteFetchSummary:
+    """保存一次分钟线抓取的固定格式摘要，便于日志和排查复用。"""
+
+    source_name: str
+    interval: str
+    request_start: datetime
+    request_end: datetime
+    returned_rows: int
+    completed_rows: int
+    range_text: str
+    columns: tuple[str, ...]
+    preview_mode: bool
+    used_local_fallback: bool
 
 
 @dataclass
@@ -454,6 +471,30 @@ def build_chart_bar_data(
         )
         for bar in selected_bars
     )
+
+
+def format_a_share_volume_value(volume: float) -> str:
+    """把成交量格式化成更符合 A股阅读习惯的“手 / 万手”文本。
+
+    当前项目保留 pytdx 原始 vol 值，不在存储阶段做股/手换算；
+    图表层继续沿用现有“手 / 万手”显示规则，等明确口径后再统一调整文案。
+    """
+    abs_volume = abs(volume)
+    if abs_volume >= 10000:
+        return f"{volume / 10000:.2f}万手"
+    if isclose(volume, round(volume)):
+        return f"{volume:.0f}手"
+    return f"{volume:.2f}手"
+
+
+def format_a_share_volume_axis_value(volume: float) -> str:
+    """把成交量纵轴数值格式化成紧凑文本，便于图表和脚本共用同一套显示口径。"""
+    abs_volume = abs(volume)
+    if abs_volume >= 100000000:
+        return f"{volume / 100000000:.2f}亿手"
+    if abs_volume >= 10000:
+        return f"{volume / 10000:.2f}万手"
+    return f"{volume:.0f}手"
 
 
 def make_chart_marker(
@@ -1641,8 +1682,80 @@ def ensure_china_tz(dt: datetime) -> datetime:
 
 def floor_to_interval(dt: datetime, minutes: int) -> datetime:
     """把当前时间按分钟周期向下取整，用来排除未走完的当根 K 线。"""
-    minute = dt.minute - dt.minute % minutes
-    return dt.replace(minute=minute, second=0, microsecond=0)
+    local_dt = ensure_china_tz(dt)
+    minute = local_dt.minute - local_dt.minute % minutes
+    return local_dt.replace(minute=minute, second=0, microsecond=0)
+
+
+def ceil_to_interval(dt: datetime, minutes: int) -> datetime:
+    """把时间向上对齐到指定分钟周期，统一生成聚合后的收盘时间戳。"""
+    local_dt = ensure_china_tz(dt).replace(second=0, microsecond=0)
+    floored = floor_to_interval(local_dt, minutes)
+    if floored == local_dt:
+        return floored
+    return floored + timedelta(minutes=minutes)
+
+
+def align_interval_close_time(dt: datetime, interval: str) -> datetime:
+    """把分钟线统一解释成收盘时间戳，供 pytdx、本地缓存和聚合链路复用。"""
+    minutes = get_interval_minutes(interval)
+    if minutes <= 1:
+        return ensure_china_tz(dt).replace(second=0, microsecond=0)
+    return ceil_to_interval(dt, minutes)
+
+
+def is_complete_minute_bucket(
+    bars: list[AlertBar],
+    bucket_close_dt: datetime,
+    target_minutes: int,
+) -> bool:
+    """校验聚合桶是否由完整、连续的 1m K线组成。"""
+    if len(bars) != target_minutes:
+        return False
+
+    ordered = sorted(bars, key=lambda item: item.dt)
+    if ordered[-1].dt != bucket_close_dt:
+        return False
+
+    for previous, current in zip(ordered, ordered[1:]):
+        if current.dt - previous.dt != timedelta(minutes=1):
+            return False
+    return True
+
+
+def aggregate_minute_bars_from_1m(
+    bars: list[AlertBar],
+    target_interval: str,
+) -> list[AlertBar]:
+    """把本地 1m 缓存聚合成更高分钟周期，统一沿用收盘时间戳语义。"""
+    normalized_interval = normalize_interval(target_interval)
+    if normalized_interval == "1m":
+        return sorted(bars, key=lambda item: item.dt)
+
+    target_minutes = get_interval_minutes(normalized_interval)
+    grouped: dict[datetime, list[AlertBar]] = {}
+    for bar in sorted(bars, key=lambda item: item.dt):
+        bucket_close_dt = align_interval_close_time(bar.dt, normalized_interval)
+        grouped.setdefault(bucket_close_dt, []).append(bar)
+
+    aggregated: list[AlertBar] = []
+    for bucket_close_dt in sorted(grouped):
+        bucket_bars = grouped[bucket_close_dt]
+        if not is_complete_minute_bucket(bucket_bars, bucket_close_dt, target_minutes):
+            continue
+
+        ordered = sorted(bucket_bars, key=lambda item: item.dt)
+        aggregated.append(
+            AlertBar(
+                dt=bucket_close_dt,
+                open_price=ordered[0].open_price,
+                close_price=ordered[-1].close_price,
+                high_price=max(item.high_price for item in ordered),
+                low_price=min(item.low_price for item in ordered),
+                volume=sum(item.volume for item in ordered),
+            )
+        )
+    return aggregated
 
 
 def is_a_share_trading_time(dt: datetime) -> bool:
@@ -2070,6 +2183,60 @@ def temporary_proxy_bypass():
 install_requests_no_proxy()
 
 
+def build_minute_fetch_summary(
+    *,
+    source_name: str,
+    interval: str,
+    request_start: datetime,
+    request_end: datetime,
+    dataframe: pd.DataFrame,
+    completed_bars: list[AlertBar],
+    preview_mode: bool,
+    used_local_fallback: bool,
+) -> MinuteFetchSummary:
+    """构造统一的分钟线抓取摘要，便于单次测试和异常场景复用。"""
+    columns = tuple(str(column) for column in dataframe.columns)
+    time_column = find_first_existing_column(dataframe, ["时间", "datetime", "day"])
+    if dataframe.empty or time_column is None:
+        range_text = "-"
+    else:
+        time_values = pd.to_datetime(dataframe[time_column])
+        range_text = f"{time_values.min():%Y-%m-%d %H:%M} ~ {time_values.max():%Y-%m-%d %H:%M}"
+
+    return MinuteFetchSummary(
+        source_name=source_name,
+        interval=normalize_interval(interval),
+        request_start=ensure_china_tz(request_start),
+        request_end=ensure_china_tz(request_end),
+        returned_rows=len(dataframe),
+        completed_rows=len(completed_bars),
+        range_text=range_text,
+        columns=columns,
+        preview_mode=preview_mode,
+        used_local_fallback=used_local_fallback,
+    )
+
+
+def format_minute_fetch_summary(summary: MinuteFetchSummary) -> str:
+    """把分钟线抓取摘要序列化成固定格式日志。"""
+    host_text = summary.source_name.removeprefix("pytdx:")
+    column_text = ",".join(summary.columns) if summary.columns else "-"
+    preview_text = "是" if summary.preview_mode else "否"
+    fallback_text = "是" if summary.used_local_fallback else "否"
+    return (
+        "分钟线抓取摘要："
+        f"主站={host_text}；"
+        f"周期={summary.interval}；"
+        f"请求区间={summary.request_start:%Y-%m-%d %H:%M} ~ {summary.request_end:%Y-%m-%d %H:%M}；"
+        f"返回条数={summary.returned_rows}；"
+        f"完整K线={summary.completed_rows}；"
+        f"时间范围={summary.range_text}；"
+        f"列名={column_text}；"
+        f"单次测试={preview_text}；"
+        f"本地fallback={fallback_text}"
+    )
+
+
 def make_log(level: str, source: str, message: str) -> LogData:
     """创建统一格式的日志载荷。"""
     return LogData(
@@ -2128,7 +2295,13 @@ def filter_completed_bars(
     *,
     timestamp_mode: str,
 ) -> list[AlertBar]:
-    """按不同数据源的时间戳语义过滤出已完成 K 线。"""
+    """按统一后的时间戳语义过滤出已完成 K线。
+
+    当前监控中心约定：
+    - pytdx 分钟线进入策略前统一按“收盘时间戳”解释。
+    - 本地 sqlite 读出的分钟线，以及由本地 1m 聚合出的更高周期分钟线，也按同一语义处理。
+    - 因此 10:00 的 5m bar 代表“本轮已经收完的 10:00 这一根”，参考时间在 10:00 及之后即可参与计算。
+    """
     cutoff = floor_to_interval(now, interval_minutes)
     if timestamp_mode == "close":
         return [bar for bar in bars if bar.dt <= cutoff]
@@ -2163,6 +2336,7 @@ class SymbolAlertService:
         self.stale_logged: bool = False
         self.state: SymbolStateData = build_default_state(self.config)
         self.chart_enabled: bool = False
+        self.last_pytdx_source_name: str = ""
 
     def set_data_source(self, source_name: str) -> None:
         """记录当前这只股票本轮实际使用的数据源。"""
@@ -2183,6 +2357,52 @@ class SymbolAlertService:
     def log(self, level: str, message: str) -> None:
         """输出带来源的结构化日志。"""
         self.log_callback(make_log(level, self.config.vt_symbol, message))
+
+    def should_log_minute_fetch_summary(
+        self,
+        summary: MinuteFetchSummary,
+        *,
+        now: datetime,
+    ) -> bool:
+        """控制实时模式的分钟抓取明细频率，避免成功时刷满日志。"""
+        if summary.preview_mode:
+            return True
+
+        cutoff = floor_to_interval(now, get_interval_minutes(summary.interval))
+        latest_remote_dt: datetime | None = None
+        if summary.range_text != "-":
+            try:
+                latest_remote_dt = ensure_china_tz(
+                    datetime.strptime(summary.range_text.split(" ~ ")[-1], "%Y-%m-%d %H:%M")
+                )
+            except ValueError:
+                latest_remote_dt = None
+
+        source_switched = bool(self.last_pytdx_source_name) and self.last_pytdx_source_name != summary.source_name
+        row_anomaly = summary.returned_rows <= 0 or summary.completed_rows <= 0
+        stale_range = latest_remote_dt is not None and latest_remote_dt < cutoff
+        return source_switched or row_anomaly or stale_range
+
+    def rows_to_alert_bars(self, rows: list[tuple], interval: str) -> list[AlertBar]:
+        """把 sqlite 行转换成提醒中心内部 bar，并统一分钟时间戳语义。"""
+        normalized_interval = str(interval).strip().lower()
+        bars = [
+            AlertBar(
+                dt=(
+                    align_interval_close_time(datetime.fromisoformat(str(row[0])), normalized_interval)
+                    if normalized_interval in SUPPORTED_INTERVALS
+                    else ensure_china_tz(datetime.fromisoformat(str(row[0])))
+                ),
+                open_price=float(row[1]),
+                close_price=float(row[4]),
+                high_price=float(row[2]),
+                low_price=float(row[3]),
+                volume=float(row[5]),
+            )
+            for row in rows
+        ]
+        bars.sort(key=lambda item: item.dt)
+        return bars
 
     def run_once(self, now: datetime, allow_local_fallback: bool = False, chart_mode: str = "live") -> None:
         """执行单只股票的单轮检查。"""
@@ -2238,7 +2458,7 @@ class SymbolAlertService:
         self.emit_state()
 
     def fetch_completed_bars(self, now: datetime, allow_local_fallback: bool = False) -> list[AlertBar]:
-        """拉取最近一批分钟数据，并取已完成 K 线。"""
+        """拉取最近一批分钟数据，并取已完成 K线。"""
         symbol, exchange = split_vt_symbol(self.config.vt_symbol)
         interval_minutes = get_interval_minutes(self.app_config.interval)
         start_dt = now - timedelta(days=5)
@@ -2247,7 +2467,7 @@ class SymbolAlertService:
         last_remote_error: Exception | None = None
 
         try:
-            # 分钟线优先走 pytdx；当前项目不再回退到东财，避免分钟口径影响图表判断。
+            # 分钟线优先走 pytdx；实时模式只认远端真源，单次测试才允许回退本地缓存。
             df, source_name = fetch_pytdx_minute_dataframe(
                 symbol=symbol,
                 exchange=exchange,
@@ -2263,6 +2483,19 @@ class SymbolAlertService:
                 interval_minutes,
                 timestamp_mode="close",
             )
+            summary = build_minute_fetch_summary(
+                source_name=source_name,
+                interval=self.app_config.interval,
+                request_start=start_dt,
+                request_end=end_dt,
+                dataframe=df,
+                completed_bars=completed_bars,
+                preview_mode=allow_local_fallback,
+                used_local_fallback=False,
+            )
+            if self.should_log_minute_fetch_summary(summary, now=now):
+                self.log("INFO", format_minute_fetch_summary(summary))
+            self.last_pytdx_source_name = source_name
             self.save_remote_bars_to_local_cache(completed_bars)
             return completed_bars
         except Exception as exc:
@@ -2279,6 +2512,21 @@ class SymbolAlertService:
             self.set_data_source(f"本地{local_interval}")
             self.log(
                 "INFO",
+                (
+                    "分钟线抓取摘要："
+                    f"主站=pytdx失败；"
+                    f"周期={normalize_interval(self.app_config.interval)}；"
+                    f"请求区间={start_dt:%Y-%m-%d %H:%M} ~ {end_dt:%Y-%m-%d %H:%M}；"
+                    "返回条数=0；"
+                    "完整K线=0；"
+                    "时间范围=-；"
+                    "列名=-；"
+                    "单次测试=是；"
+                    "本地fallback=是"
+                ),
+            )
+            self.log(
+                "INFO",
                 f"pytdx 分钟线获取失败，单次测试已回退到本地 {local_interval} 数据：{last_remote_error}",
             )
             return local_bars
@@ -2286,43 +2534,73 @@ class SymbolAlertService:
         self.set_data_source("远程失败")
         requested_interval = normalize_interval(self.app_config.interval)
         raise ValueError(
-            f"pytdx 失败：{last_remote_error}；同时本地数据库中也没有可用的 {requested_interval} 历史数据。"
+            (
+                f"pytdx 失败：{last_remote_error}；同时本地数据库中也没有可用的 {requested_interval} 历史数据。"
+                f"离线分钟回放优先依赖本地 1m 缓存，可先运行 "
+                f"scripts/repair_local_bar_cache.py --vt-symbol {self.config.vt_symbol} --fill-1m。"
+            )
         ) from last_remote_error
 
     def fetch_local_database_bars(self, now: datetime) -> tuple[list[AlertBar], str]:
-        """单次测试失败时，优先回退到项目本地数据库。"""
+        """单次测试失败时，从项目本地 sqlite 回退分钟缓存。
+
+        本地缓存默认以 1m 作为分钟真源：
+        - 1m 请求直接读取本地 1m。
+        - 5m/15m/30m 请求优先从本地 1m 聚合，避免本地多套分钟周期口径继续分叉。
+        """
         symbol, exchange = split_vt_symbol(self.config.vt_symbol)
         database_path = get_project_database_path()
         if not database_path.exists():
             return [], ""
 
         interval = normalize_interval(self.app_config.interval)
+        if interval == "d":
+            lookback_days = 400
+            start_dt = now - timedelta(days=lookback_days)
+            rows = self.query_local_bar_rows(
+                database_path=database_path,
+                symbol=symbol,
+                exchange=exchange,
+                interval=interval,
+                start_dt=start_dt,
+                end_dt=now,
+            )
+            if not rows:
+                return [], ""
+            return self.rows_to_alert_bars(rows, interval), interval
+
+        base_interval = "1m"
         lookback_days = 400 if interval == "d" else 10
         start_dt = now - timedelta(days=lookback_days)
         rows = self.query_local_bar_rows(
             database_path=database_path,
             symbol=symbol,
             exchange=exchange,
-            interval=interval,
+            interval=base_interval,
             start_dt=start_dt,
             end_dt=now,
         )
         if not rows:
             return [], ""
 
-        bars = [
-            AlertBar(
-                dt=ensure_china_tz(datetime.fromisoformat(str(row[0]))),
-                open_price=float(row[1]),
-                close_price=float(row[4]),
-                high_price=float(row[2]),
-                low_price=float(row[3]),
-                volume=float(row[5]),
-            )
-            for row in rows
-        ]
-        bars.sort(key=lambda item: item.dt)
-        return bars, interval
+        base_bars = self.rows_to_alert_bars(rows, base_interval)
+        completed_base_bars = filter_completed_bars(
+            base_bars,
+            now,
+            get_interval_minutes(base_interval),
+            timestamp_mode="close",
+        )
+        if interval == "1m":
+            return completed_base_bars, base_interval
+
+        aggregated_bars = aggregate_minute_bars_from_1m(completed_base_bars, interval)
+        completed_aggregated_bars = filter_completed_bars(
+            aggregated_bars,
+            now,
+            get_interval_minutes(interval),
+            timestamp_mode="close",
+        )
+        return completed_aggregated_bars, f"1m聚合->{interval}"
 
     def query_local_bar_rows(
         self,
@@ -2422,7 +2700,10 @@ class SymbolAlertService:
             self.log("WARNING", f"pytdx 分钟线写回本地 sqlite 失败：{exc}")
 
     def parse_bars(self, df: pd.DataFrame) -> list[AlertBar]:
-        """兼容 pytdx、东财等数据源字段名，提取提醒需要的时间、价格和成交量。"""
+        """兼容 pytdx、东财等数据源字段名，提取提醒需要的时间、价格和成交量。
+
+        分钟线进入提醒中心后统一按“收盘时间戳”处理，后续完成 bar 判断和本地聚合都复用同一套口径。
+        """
         time_column = find_first_existing_column(df, ["时间", "datetime", "day"])
         open_column = find_first_existing_column(df, ["开盘", "open"])
         close_column = find_first_existing_column(df, ["收盘", "close"])
@@ -2436,7 +2717,10 @@ class SymbolAlertService:
 
         bars: list[AlertBar] = []
         for _, row in df.iterrows():
-            dt = ensure_china_tz(pd.to_datetime(row[time_column]).to_pydatetime())
+            dt = align_interval_close_time(
+                pd.to_datetime(row[time_column]).to_pydatetime(),
+                self.app_config.interval,
+            )
             open_price = float(row[open_column]) if open_column else float(row[close_column])
             close_price = float(row[close_column])
             high_price = float(row[high_column]) if high_column else close_price
@@ -2627,7 +2911,7 @@ class AlertCenterRunner:
         self.log(
             "INFO",
             (
-                f"开始执行历史回放测试，模拟时间={now.strftime('%Y-%m-%d %H:%M:%S')}，"
+                f"开始执行历史回放测试，模拟截止时间={now.strftime('%Y-%m-%d %H:%M:%S')}，"
                 f"标的={symbols}，周期={self.config.interval}。"
             ),
         )

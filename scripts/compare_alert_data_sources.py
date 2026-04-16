@@ -22,6 +22,7 @@ from vnpy_alertcenter.core import (
     ensure_china_tz,
     fetch_eastmoney_minute_dataframe,
     fetch_pytdx_minute_dataframe,
+    format_a_share_volume_value,
     floor_to_interval,
     get_interval_minutes,
     get_project_database_path,
@@ -39,6 +40,8 @@ class SourceSnapshot:
     success: bool
     latest_dt: str = "-"
     latest_close: str = "-"
+    latest_volume_raw: str = "-"
+    latest_volume_display: str = "-"
     row_count: int = 0
     note: str = ""
 
@@ -77,6 +80,7 @@ def build_snapshot_from_bars(
     df = bars.copy()
     time_column = "datetime" if "datetime" in df.columns else "时间"
     close_column = "close" if "close" in df.columns else "收盘"
+    volume_column = "vol" if "vol" in df.columns else ("volume" if "volume" in df.columns else ("成交量" if "成交量" in df.columns else ""))
     df[time_column] = pd.to_datetime(df[time_column])
     df = df.sort_values(time_column).drop_duplicates(subset=[time_column], keep="last")
 
@@ -95,6 +99,14 @@ def build_snapshot_from_bars(
         success=True,
         latest_dt=str(latest[time_column]),
         latest_close=f"{float(latest[close_column]):.3f}",
+        latest_volume_raw=(
+            f"{float(latest[volume_column]):.3f}" if volume_column and pd.notna(latest[volume_column]) else "-"
+        ),
+        latest_volume_display=(
+            format_a_share_volume_value(float(latest[volume_column]))
+            if volume_column and pd.notna(latest[volume_column])
+            else "-"
+        ),
         row_count=len(completed_df),
     )
 
@@ -139,6 +151,8 @@ def query_local_snapshot(vt_symbol: str, interval: str, now: datetime) -> Source
         success=True,
         latest_dt=str(latest_dt),
         latest_close=f"{float(latest_close):.3f}",
+        latest_volume_raw="-",
+        latest_volume_display="-",
         row_count=len(rows),
     )
 
@@ -149,6 +163,8 @@ def print_snapshot(snapshot: SourceSnapshot) -> None:
     print(f"[{snapshot.source_name}] {status}")
     print(f"  最新时间: {snapshot.latest_dt}")
     print(f"  最新收盘: {snapshot.latest_close}")
+    print(f"  原始成交量: {snapshot.latest_volume_raw}")
+    print(f"  图表显示量: {snapshot.latest_volume_display}")
     print(f"  可用条数: {snapshot.row_count}")
     if snapshot.note:
         print(f"  备注: {snapshot.note}")

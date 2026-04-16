@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 import html
 from pathlib import Path
 
@@ -475,7 +475,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         title = QtWidgets.QLabel("一屏完成配置、测试与监控")
         title.setProperty("textRole", "heroTitle")
         subtitle = QtWidgets.QLabel(
-            "保留完整配置、状态表和信号记录；实时监控只使用 pytdx，本地 sqlite 仅用于单次测试。"
+            "保留完整配置、状态表和信号记录；实时监控只使用 pytdx，本地 sqlite 仅用于单次测试，离线高分钟周期优先由本地 1m 聚合。"
         )
         subtitle.setProperty("textRole", "heroSubtitle")
         subtitle.setWordWrap(True)
@@ -655,7 +655,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         grid.addWidget(self.create_setting_field("冷却时间", self.cooldown_spin), 0, 2)
         grid.addWidget(self.create_setting_field("复权方式", self.adjust_combo), 1, 0)
         grid.addWidget(self.create_setting_field("桌面通知", self.notification_checkbox), 1, 1)
-        grid.addWidget(self.create_setting_field("模拟时间", self.preview_time_edit), 1, 2)
+        grid.addWidget(self.create_setting_field("模拟截止时间", self.preview_time_edit), 1, 2)
 
         body.setLayout(grid)
         return self.create_card_panel("全局设置", "Global configuration", body)
@@ -761,7 +761,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         body.setLayout(grid)
         return self.create_card_panel(
             "运行信息",
-            "实时模式只走 pytdx；本地 sqlite 仅用于单次测试/离线验证",
+            "实时模式只走 pytdx；本地 sqlite 仅用于单次测试/离线验证，高分钟优先从本地 1m 聚合",
             body,
         )
 
@@ -1548,11 +1548,9 @@ class AlertCenterWidget(QtWidgets.QWidget):
             combo.setCurrentIndex(index)
 
     def build_default_preview_qdatetime(self) -> QtCore.QDateTime:
-        """默认把单次测试时间放在最近一个交易日开盘时，方便直接验证历史数据。"""
-        default_dt = datetime.now() - timedelta(days=1)
-        while default_dt.weekday() >= 5:
-            default_dt -= timedelta(days=1)
-        default_dt = default_dt.replace(hour=9, minute=30, second=0, microsecond=0)
+        """默认把单次测试截止时间放在当日 15:00，方便直接回看今天。"""
+        default_dt = datetime.now()
+        default_dt = default_dt.replace(hour=15, minute=0, second=0, microsecond=0)
         return QtCore.QDateTime(default_dt)
 
     def set_badge_text(self, label: QtWidgets.QLabel, text: str, tone: str) -> None:
@@ -1579,6 +1577,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         """刷新股票配置区里某一行的来源标签。"""
         if not row_widgets.vt_symbol.text().strip():
             row_widgets.source_label.setText("")
+            row_widgets.source_label.setToolTip("")
             row_widgets.source_label.setProperty("badgeTone", "neutral")
             row_widgets.source_label.style().unpolish(row_widgets.source_label)
             row_widgets.source_label.style().polish(row_widgets.source_label)
@@ -1586,6 +1585,19 @@ class AlertCenterWidget(QtWidgets.QWidget):
             return
         text, tone = self.get_source_badge_payload(row_widgets.source_state)
         self.set_badge_text(row_widgets.source_label, text, tone)
+        runtime_note = self.alert_engine.get_publish_runtime_note(row_widgets.config_id)
+        if row_widgets.source_state == SOURCE_CTA_MODIFIED and runtime_note:
+            row_widgets.source_label.setToolTip(f"{runtime_note}\n当前配置已手工修改，原始回测摘要仅供参考。")
+            return
+        if runtime_note:
+            row_widgets.source_label.setToolTip(runtime_note)
+            return
+        if row_widgets.source_state == SOURCE_CTA_PUBLISHED:
+            row_widgets.source_label.setToolTip("当前配置来自 CTA 回测发布；发布摘要只在当前运行期显示，重启后不会保留。")
+        elif row_widgets.source_state == SOURCE_CTA_MODIFIED:
+            row_widgets.source_label.setToolTip("该配置最初来自 CTA 回测发布，但当前参数已被手工修改。")
+        else:
+            row_widgets.source_label.setToolTip("手工维护的监控配置。")
 
     def set_row_source_state(self, row_widgets: SymbolRowWidgets, source_state: str) -> None:
         """统一写入一行配置的来源状态，并刷新胶囊显示。"""

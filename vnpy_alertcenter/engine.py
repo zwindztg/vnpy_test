@@ -48,6 +48,7 @@ class AlertCenterEngine(BaseEngine):
         super().__init__(main_engine, event_engine, APP_NAME)
         self.config_path = DEFAULT_CONFIG_PATH
         self.current_config: AppConfig = load_app_config(self.config_path)
+        self.publish_runtime_notes: dict[str, str] = {}
         self._thread: Thread | None = None
         self._stop_event: ThreadEvent | None = None
         self._runner: AlertCenterRunner | None = None
@@ -68,6 +69,12 @@ class AlertCenterEngine(BaseEngine):
         """把当前配置写回 JSON，并按需通知已打开的监控窗口刷新。"""
         save_app_config(config, self.config_path)
         self.current_config = config
+        valid_config_ids = {symbol.config_id for symbol in config.symbol_configs}
+        self.publish_runtime_notes = {
+            config_id: note
+            for config_id, note in self.publish_runtime_notes.items()
+            if config_id in valid_config_ids
+        }
         if broadcast:
             self.process_config(config)
         if message:
@@ -82,6 +89,7 @@ class AlertCenterEngine(BaseEngine):
         params: dict,
         target_index: int,
         summary_text: str = "",
+        runtime_note: str = "",
     ) -> AppConfig:
         """接收 CTA 回测发布的一条策略配置，并写入监控中心配置。"""
         if self.is_running():
@@ -108,6 +116,9 @@ class AlertCenterEngine(BaseEngine):
                 f"{summary_suffix}"
             ),
         )
+        if runtime_note:
+            target_config_id = published_config.symbol_configs[target_index].config_id
+            self.publish_runtime_notes[target_config_id] = runtime_note
         return published_config
 
     def start_alerting(self, config: AppConfig) -> None:
@@ -197,6 +208,10 @@ class AlertCenterEngine(BaseEngine):
             "config_path": str(self.config_path),
             "history_path": str(self.current_config.alert_history_path),
         }
+
+    def get_publish_runtime_note(self, config_id: str) -> str:
+        """读取某条配置对应的回测发布运行时摘要。"""
+        return self.publish_runtime_notes.get(str(config_id).strip(), "")
 
     def close(self) -> None:
         """主程序退出时安全关闭后台线程。"""

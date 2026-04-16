@@ -25,6 +25,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="修复项目本地 sqlite 的单个股票缓存。")
     parser.add_argument("--vt-symbol", default="601869.SSE", help="vn.py 风格代码，例如 601869.SSE")
     parser.add_argument("--interval", default="d", help="周期，例如 d、1m")
+    parser.add_argument(
+        "--fill-1m",
+        action="store_true",
+        help="直接补本地 1m 基础缓存。离线 5m/15m/30m 回放会优先依赖本地 1m 聚合。",
+    )
     parser.add_argument("--start", default="2025-01-01 00:00:00", help="开始时间，格式 YYYY-MM-DD HH:MM:SS")
     parser.add_argument("--end", default="2026-04-15 00:00:00", help="结束时间，格式 YYYY-MM-DD HH:MM:SS")
     return parser.parse_args()
@@ -57,7 +62,8 @@ def main() -> int:
     """执行缓存修复。"""
     args = parse_args()
     symbol, exchange = parse_vt_symbol(args.vt_symbol)
-    interval = Interval(args.interval)
+    interval_text = "1m" if args.fill_1m else args.interval
+    interval = Interval(interval_text)
     start = parse_dt(args.start)
     end = parse_dt(args.end)
 
@@ -73,7 +79,11 @@ def main() -> int:
         end=end,
     )
 
-    print(f"开始修复 {args.vt_symbol}-{args.interval} 本地缓存。")
+    print(f"开始修复 {args.vt_symbol}-{interval_text} 本地缓存。")
+    if args.fill_1m:
+        print("当前使用 --fill-1m：这会补齐本地分钟基础缓存，后续 5m/15m/30m 优先从本地 1m 聚合。")
+    elif interval_text != "1m":
+        print("提示：离线分钟回放优先依赖本地 1m 缓存；如果要补基础分钟缓存，可追加 --fill-1m。")
     bars = datafeed.query_bar_history(request, print)
     if not bars:
         print("未能从 AkShare 获取任何历史数据，修复中止。")

@@ -1,4 +1,4 @@
-"""实时提醒 BaseApp 的核心配置、策略、轮询和通知逻辑。"""
+"""CTA 实时监控 BaseApp 的核心配置、策略、轮询和通知逻辑。"""
 
 from __future__ import annotations
 
@@ -2235,7 +2235,7 @@ class SymbolAlertService:
 
     def emit_rule_alert(self, signal: AlertSignal) -> None:
         """统一输出提醒并写入本地记录，方便后续复盘。"""
-        self.log("INFO", f"{signal.level.value}提醒：{signal.message}")
+        self.log("INFO", f"{signal.level.value}信号：{signal.message}")
 
         record = RecordData(
             occurred_at=datetime.now(CHINA_TZ).isoformat(),
@@ -2356,12 +2356,12 @@ class AlertCenterRunner:
         self.log(
             "INFO",
             (
-                f"实时提醒已启动，标的={symbol_text}，周期={self.config.interval}，"
+                f"实时监控已启动，标的={symbol_text}，周期={self.config.interval}，"
                 f"轮询间隔={self.config.poll_seconds}秒，冷却时间={self.config.cooldown_seconds}秒。"
             ),
         )
-        self.log("INFO", f"提醒记录文件：{self.config.alert_history_path}")
-        self.log("INFO", "当前仅输出 GUI 日志、CSV 记录和桌面通知，不会触发任何下单或委托动作。")
+        self.log("INFO", f"信号记录文件：{self.config.alert_history_path}")
+        self.log("INFO", "当前仅输出 GUI 日志、信号记录 CSV 和桌面通知，不会触发任何下单或委托动作。")
         self.emit_initial_states()
         self.emit_status(True, False, "运行中")
 

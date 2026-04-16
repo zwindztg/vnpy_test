@@ -1,4 +1,4 @@
-"""实时提醒 BaseApp 的引擎层。"""
+"""CTA 实时监控 BaseApp 的引擎层。"""
 
 from __future__ import annotations
 
@@ -92,7 +92,7 @@ class AlertCenterEngine(BaseEngine):
     def run_preview_once(self, config: AppConfig, reference_time) -> None:
         """按指定时间执行单次历史回放测试。"""
         if self.is_running():
-            raise RuntimeError("请先停止当前实时提醒，再执行单次测试。")
+            raise RuntimeError("请先停止当前实时监控，再执行单次测试。")
 
         self.current_config = config
         runner = AlertCenterRunner(
@@ -126,7 +126,7 @@ class AlertCenterEngine(BaseEngine):
             return
 
         self._clear_worker(thread)
-        self.write_log("提醒线程已停止。")
+        self.write_log("监控线程已停止。")
 
     def is_running(self) -> bool:
         """判断后台线程是否仍在运行。"""
@@ -154,7 +154,7 @@ class AlertCenterEngine(BaseEngine):
         try:
             runner.run_forever(stop_event)
         except Exception as exc:
-            self.write_log(f"提醒线程异常退出：{exc}", source="Runner", level="ERROR")
+            self.write_log(f"监控线程异常退出：{exc}", source="Runner", level="ERROR")
             self.process_status(make_runner_status(False, False, f"异常退出：{exc}"))
         finally:
             self._clear_worker(current_thread())
@@ -176,7 +176,7 @@ class AlertCenterEngine(BaseEngine):
         self.event_engine.put(Event(EVENT_ALERTCENTER_RECORD, data))
 
         if self.current_config.notification_enabled:
-            error = send_desktop_notification("vn.py 实时提醒", data.message)
+            error = send_desktop_notification("vn.py CTA 实时监控", data.message)
             if error and "当前系统不是 macOS" not in error:
                 self.write_log(f"桌面通知失败：{error}", source="Notifier", level="ERROR")
 

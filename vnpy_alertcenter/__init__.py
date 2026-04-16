@@ -1,4 +1,4 @@
-"""vn.py 实时提醒功能模块。"""
+"""vn.py CTA 实时监控功能模块。"""
 
 from __future__ import annotations
 
@@ -11,13 +11,12 @@ from .engine import APP_NAME, AlertCenterEngine
 
 
 class AlertCenterApp(BaseApp):
-    """把 AKShare 提醒能力挂进 vn.py 的功能菜单。"""
+    """把 CTA 实时监控能力挂进 vn.py 的功能菜单。"""
 
     app_name: str = APP_NAME
     app_module: str = __module__
     app_path: Path = Path(__file__).parent
-    display_name: str = "实时提醒"
+    display_name: str = "CTA 实时监控"
     engine_class: type[AlertCenterEngine] = AlertCenterEngine
     widget_name: str = "AlertCenterWidget"
     icon_name: str = CtaBacktesterApp.icon_name
-

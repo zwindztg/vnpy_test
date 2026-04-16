@@ -1,4 +1,4 @@
-"""实时提醒 BaseApp 的窗口界面。"""
+"""CTA 实时监控 BaseApp 的窗口界面。"""
 
 from __future__ import annotations
 
@@ -116,7 +116,7 @@ class ThinSplitter(QtWidgets.QSplitter):
 
 
 class AlertCenterWidget(QtWidgets.QWidget):
-    """用于在 vn.py 内部操作实时提醒的主窗口。"""
+    """用于在 vn.py 内部操作 CTA 实时监控的主窗口。"""
 
     signal_log: QtCore.Signal = QtCore.Signal(Event)
     signal_status: QtCore.Signal = QtCore.Signal(Event)
@@ -172,11 +172,11 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.populate_state_placeholders(self.current_config)
         self.refresh_runtime_info()
         # 启动时先写一条界面日志，方便确认日志区已经恢复显示。
-        self.append_log("INFO", "UI", "日志窗口已就绪，单次测试或启动提醒后会在这里显示运行过程。")
+        self.append_log("INFO", "UI", "日志窗口已就绪，单次测试或启动监控后会在这里显示运行过程。")
 
     def init_ui(self) -> None:
         """初始化整个窗口布局。"""
-        self.setWindowTitle("实时提醒中心")
+        self.setWindowTitle("CTA 实时监控中心")
         self.setObjectName("alertCenterWidget")
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
         self.resize(1660, 960)
@@ -417,8 +417,8 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.load_button = QtWidgets.QPushButton("加载配置")
         self.save_button = QtWidgets.QPushButton("保存配置")
         self.test_button = QtWidgets.QPushButton("单次测试")
-        self.start_button = QtWidgets.QPushButton("启动提醒")
-        self.stop_button = QtWidgets.QPushButton("停止提醒")
+        self.start_button = QtWidgets.QPushButton("启动监控")
+        self.stop_button = QtWidgets.QPushButton("停止监控")
         self.expand_chart_button = QtWidgets.QPushButton("放大查看")
         self.mode_label = QtWidgets.QLabel("空闲")
         self.mode_label.setMinimumWidth(180)
@@ -461,7 +461,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         eyebrow.setProperty("textRole", "eyebrow")
         title = QtWidgets.QLabel("一屏完成配置、测试与监控")
         title.setProperty("textRole", "heroTitle")
-        subtitle = QtWidgets.QLabel("保留完整配置、状态表和提醒记录，把实时监控工作流集中在当前页面。")
+        subtitle = QtWidgets.QLabel("保留完整配置、状态表和信号记录，把 CTA 实时监控工作流集中在当前页面。")
         subtitle.setProperty("textRole", "heroSubtitle")
         subtitle.setWordWrap(True)
 
@@ -763,7 +763,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         return splitter
 
     def create_chart_log_splitter(self) -> QtWidgets.QSplitter:
-        """创建右侧仅包含“K线图 + 运行日志 + 提醒记录”的工作区。"""
+        """创建右侧仅包含“K线图 + 运行日志 + 信号记录”的工作区。"""
 
         self.chart_widget = AlertChartWidget()
         chart_group = self.create_content_panel(self.chart_widget)
@@ -784,8 +784,8 @@ class AlertCenterWidget(QtWidgets.QWidget):
         )
 
         record_group = self.create_card_panel(
-            "提醒记录",
-            "Recent alerts",
+            "信号记录",
+            "Signal records",
             self.create_record_table(),
         )
 
@@ -1145,7 +1145,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.refresh_summary_metrics()
 
     def start_alerting(self) -> None:
-        """用当前表单配置启动提醒线程。"""
+        """用当前表单配置启动监控线程。"""
         try:
             config = self.collect_config_from_form()
         except ValueError as exc:
@@ -1157,16 +1157,16 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.refresh_chart_placeholder(config)
         self.current_log_mode = "live"
         self.set_mode_label("live", "实时运行")
-        self.append_session_marker("实时提醒启动", "live")
+        self.append_session_marker("实时监控启动", "live")
         self.alert_engine.start_alerting(config)
         self.refresh_runtime_info()
         self.refresh_summary_metrics()
 
     def stop_alerting(self) -> None:
-        """停止提醒线程。"""
+        """停止监控线程。"""
         self.set_mode_label("neutral", "停止中")
         self.set_badge_text(self.status_label, "停止中", "warning")
-        self.append_session_marker("实时提醒停止请求", "neutral")
+        self.append_session_marker("实时监控停止请求", "neutral")
         self.alert_engine.stop_alerting()
         self.refresh_runtime_info()
         self.refresh_summary_metrics()
@@ -1338,7 +1338,12 @@ class AlertCenterWidget(QtWidgets.QWidget):
             return "error"
         if "历史回放测试" in message or "测试中" in message or "测试完成" in message:
             return "preview"
-        if "实时提醒已启动" in message or "提醒线程已停止" in message:
+        if (
+            "实时监控已启动" in message
+            or "监控线程已停止" in message
+            or "实时提醒已启动" in message
+            or "提醒线程已停止" in message
+        ):
             return "live"
         return self.current_log_mode
 
@@ -1346,10 +1351,10 @@ class AlertCenterWidget(QtWidgets.QWidget):
         """为日志生成更醒目的模式标签和颜色。"""
         if level == "ERROR":
             return "错误", "#ef4444"
-        if "风控型提醒" in message:
+        if "风控型信号" in message or "风控型提醒" in message:
             return "风控", "#f59e0b"
-        if "观察型提醒" in message:
-            return "提醒", "#10b981"
+        if "观察型信号" in message or "观察型提醒" in message:
+            return "信号", "#10b981"
         if mode == "preview":
             return "测试", "#2563eb"
         if mode == "live":
@@ -1395,7 +1400,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
                 self.chart_popup.clear_snapshot(message)
             self.refresh_summary_metrics()
             return
-        message = f"等待 {primary_symbol.vt_symbol} 图表数据，请先执行单次测试或启动提醒"
+        message = f"等待 {primary_symbol.vt_symbol} 图表数据，请先执行单次测试或启动监控"
         self.chart_widget.clear_snapshot(message)
         if self.chart_popup is not None:
             self.chart_popup.clear_snapshot(message)
@@ -1413,7 +1418,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
             if primary_symbol is None:
                 message = "暂无图表数据，请先启用至少一只股票"
             else:
-                message = f"等待 {primary_symbol.vt_symbol} 图表数据，请先执行单次测试或启动提醒"
+                message = f"等待 {primary_symbol.vt_symbol} 图表数据，请先执行单次测试或启动监控"
             self.chart_popup.clear_snapshot(message)
 
         self.chart_popup.show_and_activate()

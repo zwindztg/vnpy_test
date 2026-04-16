@@ -1,4 +1,4 @@
-"""实时提醒中心的轻量 K 线图控件。"""
+"""CTA 实时监控中心的轻量 K 线图控件。"""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ class AlertChartWidget(QtWidgets.QWidget):
     ) -> None:
         super().__init__(parent)
         self.snapshot: ChartSnapshotData | None = None
-        self.placeholder_text: str = "暂无图表数据，请先执行单次测试或启动提醒"
+        self.placeholder_text: str = "暂无图表数据，请先执行单次测试或启动监控"
         self.interactive = interactive
         self.intraday_only = intraday_only
         self.visible_start: int = 0

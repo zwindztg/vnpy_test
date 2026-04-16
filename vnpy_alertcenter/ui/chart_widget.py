@@ -1,4 +1,4 @@
-"""CTA 实时监控中心的轻量 K 线图控件。"""
+"""CTA 实时监控中心的轻量 K线图控件。"""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from .chart_view import (
 
 
 class AlertChartWidget(QtWidgets.QWidget):
-    """在提醒中心右侧显示最近一段 K 线和提醒标记。"""
+    """在提醒中心右侧显示最近一段 K线和提醒标记。"""
 
     view_state_changed: QtCore.Signal = QtCore.Signal()
 
@@ -57,7 +57,7 @@ class AlertChartWidget(QtWidgets.QWidget):
             QtWidgets.QSizePolicy.Policy.Expanding,
         )
         if self.interactive:
-            # 放大弹窗保持大画布，避免被主界面的紧凑尺寸限制误伤。
+            # K线图详情窗口保持大画布，避免被主界面的紧凑尺寸限制误伤。
             self.setMinimumHeight(420)
             self.setMouseTracking(True)
             self.setCursor(QtCore.Qt.CursorShape.OpenHandCursor)
@@ -151,7 +151,7 @@ class AlertChartWidget(QtWidgets.QWidget):
         self.view_state_changed.emit()
 
     def zoom_in(self) -> None:
-        """缩小可见 K 线数量，放大当天局部区域。"""
+        """缩小可见 K线数量，放大当天局部区域。"""
         if not self.can_zoom_in():
             return
 
@@ -166,7 +166,7 @@ class AlertChartWidget(QtWidgets.QWidget):
         self.view_state_changed.emit()
 
     def zoom_out(self) -> None:
-        """扩大可见 K 线数量，缩小当前局部区域。"""
+        """扩大可见 K线数量，缩小当前局部区域。"""
         if not self.can_zoom_out():
             return
 
@@ -181,7 +181,7 @@ class AlertChartWidget(QtWidgets.QWidget):
         self.view_state_changed.emit()
 
     def pan_left(self) -> None:
-        """把可视窗口向左平移，查看当天更早的 K 线。"""
+        """把可视窗口向左平移，查看当天更早的 K线。"""
         if not self.can_pan_left():
             return
 
@@ -190,7 +190,7 @@ class AlertChartWidget(QtWidgets.QWidget):
         self.view_state_changed.emit()
 
     def pan_right(self) -> None:
-        """把可视窗口向右平移，回到更新的 K 线区域。"""
+        """把可视窗口向右平移，回到更新的 K线区域。"""
         if not self.can_pan_right():
             return
 
@@ -615,12 +615,12 @@ class AlertChartWidget(QtWidgets.QWidget):
         return rect.bottom() - ratio * rect.height()
 
 
-class AlertChartPopupWindow(QtWidgets.QWidget):
-    """用于放大查看 K 线图的独立窗口。"""
+class AlertKLineDetailWindow(QtWidgets.QWidget):
+    """承载 K线图详情窗口交互能力的独立窗口。"""
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent, QtCore.Qt.WindowType.Window)
-        self.setWindowTitle("放大查看 K 线图")
+        self.setWindowTitle("K线图详情窗口")
         self.resize(1280, 860)
 
         self.close_shortcut = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Close, self)
@@ -657,22 +657,22 @@ class AlertChartPopupWindow(QtWidgets.QWidget):
         self.refresh_button_states()
 
     def set_snapshot(self, snapshot: ChartSnapshotData) -> None:
-        """刷新弹窗内的 K 线图，并同步窗口标题。"""
+        """刷新 K线图详情窗口里的图表，并同步窗口标题。"""
         self.chart_widget.set_snapshot(snapshot)
         self.setWindowTitle(
-            f"放大查看 - {snapshot.vt_symbol} | {snapshot.interval} | "
+            f"K线图详情窗口 - {snapshot.vt_symbol} | {snapshot.interval} | "
             f"{get_strategy_display_name(snapshot.strategy_name)}"
         )
         self.refresh_button_states()
 
     def clear_snapshot(self, message: str) -> None:
-        """清空弹窗图表，占位等待下一次图表快照。"""
+        """清空详情窗口图表，占位等待下一次图表快照。"""
         self.chart_widget.clear_snapshot(message)
-        self.setWindowTitle("放大查看 K 线图")
+        self.setWindowTitle("K线图详情窗口")
         self.refresh_button_states()
 
     def show_and_activate(self) -> None:
-        """显示并激活已有弹窗实例。"""
+        """显示并激活已有 K线图详情窗口实例。"""
         self.show()
         self.raise_()
         self.activateWindow()
@@ -686,7 +686,7 @@ class AlertChartPopupWindow(QtWidgets.QWidget):
         self.pan_right_button.setEnabled(self.chart_widget.can_pan_right())
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:      # noqa: N802
-        """兜底处理 macOS 下的 Command+W，确保弹窗能直接关闭。"""
+        """兜底处理 macOS 下的 Command+W，确保详情窗口能直接关闭。"""
         if event.matches(QtGui.QKeySequence.StandardKey.Close):
             self.close()
             event.accept()

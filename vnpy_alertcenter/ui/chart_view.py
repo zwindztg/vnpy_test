@@ -1,4 +1,4 @@
-"""K 线图视图状态的纯逻辑辅助函数。"""
+"""K线图视图状态的纯逻辑辅助函数。"""
 
 from __future__ import annotations
 

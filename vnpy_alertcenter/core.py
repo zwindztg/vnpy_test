@@ -201,7 +201,7 @@ class ChartMarkerData:
 
 @dataclass(frozen=True)
 class ChartSnapshotData:
-    """GUI 右侧 K 线图所需的一次完整快照。"""
+    """GUI 右侧 K线图所需的一次完整快照。"""
 
     config_id: str
     vt_symbol: str

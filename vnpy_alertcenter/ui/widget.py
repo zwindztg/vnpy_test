@@ -45,7 +45,7 @@ from ..engine import (
     EVENT_ALERTCENTER_STATUS,
     AlertCenterEngine,
 )
-from .chart_widget import AlertChartPopupWindow, AlertChartWidget
+from .chart_widget import AlertChartWidget, AlertKLineDetailWindow
 
 
 @dataclass
@@ -169,7 +169,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.current_config: AppConfig = self.alert_engine.load_config()
         self.current_log_mode: str = "neutral"
         self.latest_chart_snapshot: ChartSnapshotData | None = None
-        self.chart_popup: AlertChartPopupWindow | None = None
+        self.kline_detail_window: AlertKLineDetailWindow | None = None
         self.latest_runner_status: RunnerStatusData | None = None
         self.state_cache: dict[str, SymbolStateData] = {}
         self.recent_records_cache: list[RecordData] = []
@@ -431,7 +431,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.test_button = QtWidgets.QPushButton("单次测试")
         self.start_button = QtWidgets.QPushButton("启动监控")
         self.stop_button = QtWidgets.QPushButton("停止监控")
-        self.expand_chart_button = QtWidgets.QPushButton("放大查看")
+        self.expand_chart_button = QtWidgets.QPushButton("k线图详情")
         self.mode_label = QtWidgets.QLabel("空闲")
         self.mode_label.setMinimumWidth(180)
         self.status_label = QtWidgets.QLabel("未启动")
@@ -459,7 +459,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.test_button.clicked.connect(self.run_preview_once)
         self.start_button.clicked.connect(self.start_alerting)
         self.stop_button.clicked.connect(self.stop_alerting)
-        self.expand_chart_button.clicked.connect(self.open_chart_popup)
+        self.expand_chart_button.clicked.connect(self.open_kline_detail_window)
 
         card = QtWidgets.QFrame()
         card.setProperty("cardRole", "hero")
@@ -1296,7 +1296,7 @@ class AlertCenterWidget(QtWidgets.QWidget):
         self.refresh_summary_metrics()
 
     def process_chart_event(self, event: Event) -> None:
-        """处理右侧 K 线图快照事件。"""
+        """处理右侧 K线图快照事件。"""
         data: ChartSnapshotData = event.data
         primary_symbol = self.get_primary_enabled_symbol(self.current_config)
         if primary_symbol and data.config_id != primary_symbol.config_id:
@@ -1305,8 +1305,8 @@ class AlertCenterWidget(QtWidgets.QWidget):
         if data.mode == "preview":
             self.latest_preview_time = data.reference_time.astimezone(CHINA_TZ)
         self.chart_widget.set_snapshot(data)
-        if self.chart_popup is not None:
-            self.chart_popup.set_snapshot(data)
+        if self.kline_detail_window is not None:
+            self.kline_detail_window.set_snapshot(data)
         self.refresh_summary_metrics()
 
     def process_config_event(self, event: Event) -> None:
@@ -1461,32 +1461,32 @@ class AlertCenterWidget(QtWidgets.QWidget):
         if primary_symbol is None:
             message = "暂无图表数据，请先启用至少一只股票"
             self.chart_widget.clear_snapshot(message)
-            if self.chart_popup is not None:
-                self.chart_popup.clear_snapshot(message)
+            if self.kline_detail_window is not None:
+                self.kline_detail_window.clear_snapshot(message)
             self.refresh_summary_metrics()
             return
         message = f"等待 {primary_symbol.vt_symbol} 图表数据，请先执行单次测试或启动监控"
         self.chart_widget.clear_snapshot(message)
-        if self.chart_popup is not None:
-            self.chart_popup.clear_snapshot(message)
+        if self.kline_detail_window is not None:
+            self.kline_detail_window.clear_snapshot(message)
         self.refresh_summary_metrics()
 
-    def open_chart_popup(self) -> None:
-        """打开或复用放大查看弹窗，并同步最新图表快照。"""
-        if self.chart_popup is None:
-            self.chart_popup = AlertChartPopupWindow(self)
+    def open_kline_detail_window(self) -> None:
+        """打开或复用 K线图详情窗口，并同步最新图表快照。"""
+        if self.kline_detail_window is None:
+            self.kline_detail_window = AlertKLineDetailWindow(self)
 
         if self.latest_chart_snapshot is not None:
-            self.chart_popup.set_snapshot(self.latest_chart_snapshot)
+            self.kline_detail_window.set_snapshot(self.latest_chart_snapshot)
         else:
             primary_symbol = self.get_primary_enabled_symbol(self.current_config)
             if primary_symbol is None:
                 message = "暂无图表数据，请先启用至少一只股票"
             else:
                 message = f"等待 {primary_symbol.vt_symbol} 图表数据，请先执行单次测试或启动监控"
-            self.chart_popup.clear_snapshot(message)
+            self.kline_detail_window.clear_snapshot(message)
 
-        self.chart_popup.show_and_activate()
+        self.kline_detail_window.show_and_activate()
 
     def set_combo_data(self, combo: QtWidgets.QComboBox, value: str) -> None:
         """按 userData 选择下拉项。"""

@@ -256,6 +256,9 @@ class AlertCenterWidget(QtWidgets.QWidget):
                 font-size: 22px;
                 font-weight: 700;
             }
+            #alertCenterWidget QLabel[textRole="metricValue"][metricScale="compact"] {
+                font-size: 17px;
+            }
             #alertCenterWidget QLabel[textRole="metricValue"][metricTone="success"] {
                 color: #35d07f;
             }
@@ -562,6 +565,9 @@ class AlertCenterWidget(QtWidgets.QWidget):
         value_label = QtWidgets.QLabel(default_value)
         value_label.setProperty("textRole", "metricValue")
         value_label.setProperty("metricTone", tone)
+        if key == "source":
+            # 主数据源通常是多行长文本，单独缩小字号避免把卡片撑得过满。
+            value_label.setProperty("metricScale", "compact")
         value_label.setWordWrap(True)
 
         layout.addWidget(title_label)

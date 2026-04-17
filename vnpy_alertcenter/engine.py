@@ -91,7 +91,7 @@ class AlertCenterEngine(BaseEngine):
         summary_text: str = "",
         runtime_note: str = "",
     ) -> AppConfig:
-        """接收 CTA 回测发布的一条策略配置，并写入监控中心配置。"""
+        """接收 CTA 回测发布的一条策略配置，并写入监控中心候选配置。"""
         if self.is_running():
             raise RuntimeError("当前 CTA 实时监控正在运行，请先停止监控后再接收 CTA 回测发布。")
 
@@ -112,7 +112,7 @@ class AlertCenterEngine(BaseEngine):
         self.save_config(
             published_config,
             message=(
-                f"已接收 CTA 回测发布：{vt_symbol} / {strategy_name} / {interval}"
+                f"已接收 CTA 回测发布候选：{vt_symbol} / {strategy_name} / {interval}"
                 f"{summary_suffix}"
             ),
         )

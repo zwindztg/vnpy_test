@@ -875,7 +875,7 @@ def patch_backtester_manager() -> None:
         self.publish_monitor_button = QtWidgets.QPushButton("发布到 CTA 实时监控")
         self.publish_monitor_button.setEnabled(False)
         self.publish_monitor_button.setFixedHeight(self.publish_monitor_button.sizeHint().height() * 2)
-        self.publish_monitor_button.setToolTip("把最近一次成功完成的回测配置发布到 CTA 实时监控中心")
+        self.publish_monitor_button.setToolTip("把最近一次成功完成的回测配置发布为 CTA 实时监控候选")
         self.publish_monitor_button.clicked.connect(self.publish_to_alertcenter)
         self._pending_publish_candidate = None
         self._latest_publish_candidate = None
@@ -946,7 +946,8 @@ def patch_backtester_manager() -> None:
             f"目标：{selected_label}",
             f"发布时间：{published_at.strftime('%Y-%m-%d %H:%M:%S')}",
             f"回测摘要：{summary_text}",
-            "规则：同一股票可保留多个候选配置，但同一时刻只能启用一条。",
+            "规则：发布后会先作为候选配置写入，默认不会自动启用。",
+            "同一股票可保留多个候选配置，但同一时刻只能启用一条。",
         ]
         if current_config.symbol_configs and current_config.interval != candidate["interval"]:
             message_lines.append("")
@@ -979,7 +980,7 @@ def patch_backtester_manager() -> None:
             return
 
         self.write_log(
-            "CTA 回测配置已发布到 CTA 实时监控："
+            "CTA 回测配置已发布为 CTA 实时监控候选："
             f"{candidate['vt_symbol']} / {strategy_display} / {candidate['interval']} / "
             f"{published_at.strftime('%Y-%m-%d %H:%M:%S')} / {summary_text}"
         )
@@ -1001,7 +1002,7 @@ def patch_backtester_manager() -> None:
         if is_publishable_monitor_strategy(class_name):
             self.publish_monitor_button.setEnabled(True)
             self.publish_monitor_button.setToolTip(
-                "发布最近一次成功完成的回测配置到 CTA 实时监控中心"
+                "发布最近一次成功完成的回测配置为 CTA 实时监控候选"
             )
             self.write_log("当前回测结果已可发布到 CTA 实时监控。")
         else:

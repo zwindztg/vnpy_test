@@ -56,7 +56,7 @@ class PublishSymbolConfigTest(unittest.TestCase):
         self.assertEqual(2, len(published.symbol_configs))
         self.assertEqual("600000.SSE", published.symbol_configs[1].vt_symbol)
         self.assertEqual(SOURCE_CTA_PUBLISHED, published.symbol_configs[1].source_state)
-        self.assertTrue(published.symbol_configs[1].enabled)
+        self.assertFalse(published.symbol_configs[1].enabled)
 
     def test_publish_overwrites_selected_slot(self) -> None:
         config = self.make_config(
@@ -89,7 +89,7 @@ class PublishSymbolConfigTest(unittest.TestCase):
 
         self.assertEqual("LessonVolumeBreakoutAShareStrategy", published.symbol_configs[1].strategy_name)
         self.assertEqual(SOURCE_CTA_PUBLISHED, published.symbol_configs[1].source_state)
-        self.assertTrue(published.symbol_configs[1].enabled)
+        self.assertFalse(published.symbol_configs[1].enabled)
 
     def test_publish_same_symbol_to_other_slot_is_allowed(self) -> None:
         config = self.make_config(
@@ -114,10 +114,10 @@ class PublishSymbolConfigTest(unittest.TestCase):
         )
 
         self.assertEqual(2, len(published.symbol_configs))
-        self.assertFalse(published.symbol_configs[0].enabled)
+        self.assertTrue(published.symbol_configs[0].enabled)
         self.assertEqual("601869.SSE", published.symbol_configs[1].vt_symbol)
         self.assertEqual("LessonDonchianAShareStrategy", published.symbol_configs[1].strategy_name)
-        self.assertTrue(published.symbol_configs[1].enabled)
+        self.assertFalse(published.symbol_configs[1].enabled)
 
     def test_parse_symbol_configs_keeps_same_symbol_candidates(self) -> None:
         configs = parse_symbol_configs(

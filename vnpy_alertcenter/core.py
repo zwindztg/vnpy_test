@@ -1530,13 +1530,17 @@ def publish_symbol_config(
     interval: str,
     target_index: int,
 ) -> AppConfig:
-    """把 CTA 回测发布的一条策略配置落到实时监控配置里。"""
+    """把 CTA 回测发布的一条策略配置落到实时监控配置里。
+
+    发布动作默认只导入候选配置，不会偷偷切换当前启用状态。
+    是否启用由监控中心显式操作，避免“发布候选”变成“立刻换正在跑的版本”。
+    """
     normalized_symbol = ensure_valid_symbol_config(
         SymbolConfig(
             vt_symbol=published_symbol.vt_symbol,
             strategy_name=published_symbol.strategy_name,
             params=published_symbol.params,
-            enabled=True,
+            enabled=False,
             source_state=SOURCE_CTA_PUBLISHED,
             config_id=generate_config_id(),
         )
@@ -1553,7 +1557,7 @@ def publish_symbol_config(
             vt_symbol=normalized_symbol.vt_symbol,
             strategy_name=normalized_symbol.strategy_name,
             params=normalized_symbol.params,
-            enabled=True,
+            enabled=False,
             source_state=SOURCE_CTA_PUBLISHED,
             config_id=generate_config_id(),
         )
@@ -1569,12 +1573,7 @@ def publish_symbol_config(
         notification_enabled=current_config.notification_enabled,
         symbol_configs=tuple(symbol_configs),
     )
-    target_config_id = next_config.symbol_configs[target_index].config_id
-    return update_symbol_enabled_state(
-        next_config,
-        config_id=target_config_id,
-        enabled=True,
-    )
+    return next_config
 
 
 def update_symbol_enabled_state(

@@ -37,6 +37,7 @@ from .chart_view import (
     infer_wheel_input_kind,
     looks_like_smooth_mouse_wheel,
     build_visible_range_text,
+    get_default_visible_window,
     get_reset_visible_window,
     get_available_bars,
     get_available_markers,
@@ -79,7 +80,6 @@ class AlertChartWidget(QtWidgets.QWidget):
         interactive: bool = False,
         intraday_only: bool = False,
         show_volume_panel: bool = False,
-        prefer_full_day_for_1m: bool = False,
     ) -> None:
         super().__init__(parent)
         self.snapshot: ChartSnapshotData | None = None
@@ -87,7 +87,6 @@ class AlertChartWidget(QtWidgets.QWidget):
         self.interactive = interactive
         self.intraday_only = intraday_only
         self.show_volume_panel = show_volume_panel
-        self.prefer_full_day_for_1m = prefer_full_day_for_1m
         self.visible_start: float = 0.0
         self.visible_count: int = 0
         self.dragging: bool = False
@@ -428,9 +427,10 @@ class AlertChartWidget(QtWidgets.QWidget):
         if not bars:
             return ()
         if not self.can_zoom():
-            if self.snapshot is not None and self.snapshot.default_visible_count > 0:
-                # 主界面静态图也遵循和详情窗口一致的默认视窗，避免两边初始看到的时间段不一致。
-                return tuple(bars[-self.snapshot.default_visible_count:])
+            default_window = get_default_visible_window(self.snapshot, total=len(bars))
+            if default_window is not None:
+                start_index, visible_count = default_window
+                return tuple(bars[start_index:start_index + visible_count])
             return tuple(bars)
 
         start_index, end_index = self.get_render_window(len(bars))
@@ -467,7 +467,6 @@ class AlertChartWidget(QtWidgets.QWidget):
                 interactive=self.interactive,
                 total=total,
                 min_visible_bars=self.MIN_VISIBLE_BARS,
-                prefer_full_day_for_1m=self.prefer_full_day_for_1m,
             )
             if preferred_window is not None:
                 self.visible_start, self.visible_count = preferred_window
@@ -1450,6 +1449,9 @@ class AlertChartWidget(QtWidgets.QWidget):
 class AlertKLineDetailWindow(QtWidgets.QWidget):
     """承载 K线图详情窗口交互能力的独立窗口。"""
 
+    # 这些调试标签只在排查触摸板/鼠标事件时才有价值，默认不应出现在正式界面里。
+    SHOW_INTERACTION_DEBUG = False
+
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent, QtCore.Qt.WindowType.Window)
         self.setWindowTitle("K线图详情窗口")
@@ -1465,20 +1467,23 @@ class AlertKLineDetailWindow(QtWidgets.QWidget):
             # 不能再额外偷偷裁成“仅最新交易日”，否则 5m/15m/30m 会和主界面看到不同内容。
             intraday_only=False,
             show_volume_panel=True,
-            prefer_full_day_for_1m=True,
         )
         self.zoom_in_button = QtWidgets.QPushButton("放大")
         self.zoom_out_button = QtWidgets.QPushButton("缩小")
         self.reset_button = QtWidgets.QPushButton("还原")
         self.pan_left_button = QtWidgets.QPushButton("左移")
         self.pan_right_button = QtWidgets.QPushButton("右移")
-        self.input_hint_label = QtWidgets.QLabel("触摸板：左右滑=平移，双指捏合=缩放，上下滑不再缩放；鼠标滚轮继续缩放。")
-        self.input_debug_label = QtWidgets.QLabel("最近输入：等待手势")
-        self.raw_event_label = QtWidgets.QLabel("原始事件：等待输入")
-        self.input_hint_label.setStyleSheet("color: #8ea2b8; font-size: 12px;")
-        self.input_debug_label.setStyleSheet("color: #60a5fa; font-size: 12px;")
-        self.raw_event_label.setStyleSheet("color: #93c5fd; font-size: 11px;")
-        self.raw_event_label.setWordWrap(True)
+        self.input_hint_label: QtWidgets.QLabel | None = None
+        self.input_debug_label: QtWidgets.QLabel | None = None
+        self.raw_event_label: QtWidgets.QLabel | None = None
+        if self.SHOW_INTERACTION_DEBUG:
+            self.input_hint_label = QtWidgets.QLabel("触摸板：左右滑=平移，双指捏合=缩放，上下滑不再缩放；鼠标滚轮继续缩放。")
+            self.input_debug_label = QtWidgets.QLabel("最近输入：等待手势")
+            self.raw_event_label = QtWidgets.QLabel("原始事件：等待输入")
+            self.input_hint_label.setStyleSheet("color: #8ea2b8; font-size: 12px;")
+            self.input_debug_label.setStyleSheet("color: #60a5fa; font-size: 12px;")
+            self.raw_event_label.setStyleSheet("color: #93c5fd; font-size: 11px;")
+            self.raw_event_label.setWordWrap(True)
 
         self.zoom_in_button.clicked.connect(self.chart_widget.zoom_in)
         self.zoom_out_button.clicked.connect(self.chart_widget.zoom_out)
@@ -1486,8 +1491,9 @@ class AlertKLineDetailWindow(QtWidgets.QWidget):
         self.pan_left_button.clicked.connect(self.chart_widget.pan_left)
         self.pan_right_button.clicked.connect(self.chart_widget.pan_right)
         self.chart_widget.view_state_changed.connect(self.refresh_button_states)
-        self.chart_widget.interaction_debug_changed.connect(self.input_debug_label.setText)
-        self.chart_widget.raw_event_debug_changed.connect(self.raw_event_label.setText)
+        if self.input_debug_label is not None and self.raw_event_label is not None:
+            self.chart_widget.interaction_debug_changed.connect(self.input_debug_label.setText)
+            self.chart_widget.raw_event_debug_changed.connect(self.raw_event_label.setText)
 
         controls_layout = QtWidgets.QHBoxLayout()
         controls_layout.addStretch(1)
@@ -1500,9 +1506,12 @@ class AlertKLineDetailWindow(QtWidgets.QWidget):
 
         layout = QtWidgets.QVBoxLayout()
         layout.addLayout(controls_layout)
-        layout.addWidget(self.input_hint_label)
-        layout.addWidget(self.input_debug_label)
-        layout.addWidget(self.raw_event_label)
+        if self.input_hint_label is not None:
+            layout.addWidget(self.input_hint_label)
+        if self.input_debug_label is not None:
+            layout.addWidget(self.input_debug_label)
+        if self.raw_event_label is not None:
+            layout.addWidget(self.raw_event_label)
         layout.addWidget(self.chart_widget, stretch=1)
         self.setLayout(layout)
         self.refresh_button_states()

@@ -149,14 +149,65 @@ class AlertCenterMinuteContractTest(unittest.TestCase):
                 for index in range(30)
             ]
 
-            with patch.object(service, "query_local_bar_rows", return_value=rows) as query_mock:
+            def fake_query(**kwargs):
+                if kwargs["interval"] == "5m":
+                    return []
+                if kwargs["interval"] == "1m":
+                    return rows
+                return []
+
+            with patch.object(service, "query_local_bar_rows", side_effect=fake_query) as query_mock:
                 bars, source_name = service.fetch_local_database_bars(now)
 
-            self.assertEqual(1, query_mock.call_count)
-            self.assertEqual("1m", query_mock.call_args.kwargs["interval"])
+            self.assertEqual(2, query_mock.call_count)
+            self.assertEqual("5m", query_mock.call_args_list[0].kwargs["interval"])
+            self.assertEqual("1m", query_mock.call_args_list[1].kwargs["interval"])
             self.assertEqual("1m聚合->5m", source_name)
             self.assertEqual(6, len(bars))
             self.assertEqual(datetime(2026, 4, 16, 9, 35, tzinfo=CHINA_TZ), bars[0].dt)
+            self.assertEqual(datetime(2026, 4, 16, 10, 0, tzinfo=CHINA_TZ), bars[-1].dt)
+
+    def test_preview_local_fallback_prefers_requested_interval_cache_before_1m(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            history_path = Path(temp_dir) / "alerts.csv"
+            service = make_service(history_path, interval="5m")
+            now = datetime(2026, 4, 16, 10, 0, tzinfo=CHINA_TZ)
+            direct_rows = [
+                (
+                    "2026-04-16 09:55:00",
+                    10.0,
+                    10.4,
+                    9.8,
+                    10.2,
+                    520.0,
+                ),
+                (
+                    "2026-04-16 10:00:00",
+                    10.2,
+                    10.5,
+                    10.1,
+                    10.3,
+                    560.0,
+                ),
+            ]
+
+            query_calls: list[str] = []
+
+            def fake_query(**kwargs):
+                query_calls.append(kwargs["interval"])
+                if kwargs["interval"] == "5m":
+                    return direct_rows
+                if kwargs["interval"] == "1m":
+                    self.fail("存在同周期缓存时，不应再退回本地 1m 聚合。")
+                return []
+
+            with patch.object(service, "query_local_bar_rows", side_effect=fake_query):
+                bars, source_name = service.fetch_local_database_bars(now)
+
+            self.assertEqual(["5m"], query_calls)
+            self.assertEqual("5m", source_name)
+            self.assertEqual(2, len(bars))
+            self.assertEqual(datetime(2026, 4, 16, 9, 55, tzinfo=CHINA_TZ), bars[0].dt)
             self.assertEqual(datetime(2026, 4, 16, 10, 0, tzinfo=CHINA_TZ), bars[-1].dt)
 
     def test_preview_success_logs_fixed_fetch_summary(self) -> None:

@@ -31,6 +31,7 @@ from vnpy_alertcenter.ui.chart_view import (
     extract_pinch_zoom_delta,
     infer_wheel_input_kind,
     looks_like_smooth_mouse_wheel,
+    get_default_visible_window,
     get_render_window,
     get_available_bars,
     get_available_markers,
@@ -222,7 +223,7 @@ class AlertChartViewTest(unittest.TestCase):
         self.assertEqual(["buy", "sell"], [marker.direction for marker in merged])
         self.assertEqual(["buy_a", "sell_a"], [marker.rule_name for marker in merged])
 
-    def test_reset_visible_window_keeps_recent_segment_for_main_behavior(self) -> None:
+    def test_default_visible_window_uses_snapshot_declared_recent_segment(self) -> None:
         snapshot = ChartSnapshotData(
             config_id="main-1m",
             vt_symbol="601869.SSE",
@@ -236,17 +237,14 @@ class AlertChartViewTest(unittest.TestCase):
             default_visible_count=12,
         )
 
-        preferred = get_reset_visible_window(
+        preferred = get_default_visible_window(
             snapshot,
-            interactive=True,
             total=len(snapshot.bars),
-            min_visible_bars=12,
-            prefer_full_day_for_1m=False,
         )
 
         self.assertEqual((8, 12), preferred)
 
-    def test_reset_visible_window_expands_full_day_for_detail_1m(self) -> None:
+    def test_reset_visible_window_matches_same_snapshot_default_rule(self) -> None:
         snapshot = ChartSnapshotData(
             config_id="detail-1m",
             vt_symbol="601869.SSE",
@@ -265,10 +263,9 @@ class AlertChartViewTest(unittest.TestCase):
             interactive=True,
             total=len(snapshot.bars),
             min_visible_bars=12,
-            prefer_full_day_for_1m=True,
         )
 
-        self.assertEqual((0, 20), preferred)
+        self.assertEqual((8, 12), preferred)
 
     def test_classify_wheel_navigation_prefers_horizontal_pan_for_trackpad(self) -> None:
         self.assertEqual(

@@ -395,25 +395,20 @@ def get_right_offset(total: int, visible_start: float, visible_count: int) -> fl
     return max(0.0, total - (visible_start + visible_count))
 
 
-def get_reset_visible_window(
+def get_default_visible_window(
     snapshot: ChartSnapshotData | None,
     *,
-    interactive: bool,
     total: int,
-    min_visible_bars: int,
-    prefer_full_day_for_1m: bool,
+    min_visible_bars: int = 0,
 ) -> tuple[int, int] | None:
-    """根据组件职责决定 reset 时的默认视口。
+    """根据快照约定返回统一的默认可见窗口。
 
-    约定：
-    - 主界面嵌入图不在这里 special case，仍由调用方按默认静态窗口裁最近一段。
-    - 详情窗口在 1m 下优先看当天完整数据；其它分钟周期仍沿用 default_visible_count。
+    这条规则同时服务主界面静态图和详情窗口 reset：
+    - snapshot 负责声明默认想看到多少根；
+    - 图层只消费这个窗口，不再各自追加 1m/详情窗口 special case。
     """
-    if not interactive or snapshot is None or total <= 0:
+    if snapshot is None or total <= 0:
         return None
-
-    if prefer_full_day_for_1m and snapshot.interval == "1m":
-        return 0, total
 
     if snapshot.default_visible_count > 0:
         visible_count = min(
@@ -422,7 +417,24 @@ def get_reset_visible_window(
         )
         return max(0, total - visible_count), visible_count
 
-    return None
+    return 0, total
+
+
+def get_reset_visible_window(
+    snapshot: ChartSnapshotData | None,
+    *,
+    interactive: bool,
+    total: int,
+    min_visible_bars: int,
+) -> tuple[int, int] | None:
+    """仅在可交互图表 reset 时读取默认视口。"""
+    if not interactive:
+        return None
+    return get_default_visible_window(
+        snapshot,
+        total=total,
+        min_visible_bars=min_visible_bars,
+    )
 
 
 def sync_view_state(

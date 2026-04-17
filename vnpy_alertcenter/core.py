@@ -2536,7 +2536,7 @@ class SymbolAlertService:
         raise ValueError(
             (
                 f"pytdx 失败：{last_remote_error}；同时本地数据库中也没有可用的 {requested_interval} 历史数据。"
-                f"离线分钟回放优先依赖本地 1m 缓存，可先运行 "
+                f"离线分钟回放会先尝试同周期缓存，缺失时再退到本地 1m 聚合；可先运行 "
                 f"scripts/repair_local_bar_cache.py --vt-symbol {self.config.vt_symbol} --fill-1m。"
             )
         ) from last_remote_error
@@ -2544,9 +2544,10 @@ class SymbolAlertService:
     def fetch_local_database_bars(self, now: datetime) -> tuple[list[AlertBar], str]:
         """单次测试失败时，从项目本地 sqlite 回退分钟缓存。
 
-        本地缓存默认以 1m 作为分钟真源：
+        本地分钟回放遵循“同周期优先，缺失再退 1m 聚合”的规则：
         - 1m 请求直接读取本地 1m。
-        - 5m/15m/30m 请求优先从本地 1m 聚合，避免本地多套分钟周期口径继续分叉。
+        - 5m/15m/30m 先尝试读取本地同周期缓存。
+        - 如果同周期缺失，再退回本地 1m 聚合，保证线上写回和离线回放至少能闭环。
         """
         symbol, exchange = split_vt_symbol(self.config.vt_symbol)
         database_path = get_project_database_path()
@@ -2569,9 +2570,30 @@ class SymbolAlertService:
                 return [], ""
             return self.rows_to_alert_bars(rows, interval), interval
 
-        base_interval = "1m"
-        lookback_days = 400 if interval == "d" else 10
+        lookback_days = 10
         start_dt = now - timedelta(days=lookback_days)
+        # 先尝试当前请求周期，确保 pytdx 在线写回过的分钟缓存能直接被本地回放复用。
+        direct_rows = self.query_local_bar_rows(
+            database_path=database_path,
+            symbol=symbol,
+            exchange=exchange,
+            interval=interval,
+            start_dt=start_dt,
+            end_dt=now,
+        )
+        if direct_rows:
+            direct_bars = self.rows_to_alert_bars(direct_rows, interval)
+            completed_direct_bars = filter_completed_bars(
+                direct_bars,
+                now,
+                get_interval_minutes(interval),
+                timestamp_mode="close",
+            )
+            return completed_direct_bars, interval
+        if interval == "1m":
+            return [], ""
+
+        base_interval = "1m"
         rows = self.query_local_bar_rows(
             database_path=database_path,
             symbol=symbol,
@@ -2775,9 +2797,10 @@ class SymbolAlertService:
             # 1m 详情窗口需要保留当天完整数据，默认先看最后 2 小时，左拖后还能回看上午。
             latest_trade_date = bars[-1].dt.date()
             visible_bars = [bar for bar in bars if bar.dt.date() == latest_trade_date]
-            default_visible_count = min(120, len(visible_bars))
         else:
             visible_bars = bars[-120:]
+        # 默认视窗大小由快照统一声明，主界面和详情窗口都只消费这条规则。
+        default_visible_count = min(120, len(visible_bars))
         start_dt = visible_bars[0].dt
         visible_bar_data = build_chart_bar_data(visible_bars)
         theoretical_markers = build_chart_markers(

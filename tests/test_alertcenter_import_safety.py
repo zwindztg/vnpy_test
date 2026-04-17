@@ -44,6 +44,22 @@ class AlertCenterImportSafetyTest(unittest.TestCase):
             ["vnpy_ctabacktester", "vnpy.trader.ui"],
         )
 
+    def test_import_core_does_not_monkey_patch_requests_session(self) -> None:
+        result = self.run_python_probe(
+            """
+            import importlib
+            import requests.sessions
+
+            original = requests.sessions.Session.merge_environment_settings
+            importlib.import_module("vnpy_alertcenter.core")
+            current = requests.sessions.Session.merge_environment_settings
+
+            if current is not original:
+                raise SystemExit("requests session unexpectedly patched at import time")
+            """
+        )
+        self.assertEqual(0, result.returncode, msg=result.stderr or result.stdout)
+
     def test_import_chart_view_does_not_pull_widget_or_qt(self) -> None:
         self.run_import_probe(
             "vnpy_alertcenter.ui.chart_view",

@@ -26,7 +26,6 @@ from vnpy_alertcenter.core import (
     floor_to_interval,
     get_interval_minutes,
     get_project_database_path,
-    install_requests_no_proxy,
     normalize_interval,
     split_vt_symbol,
 )
@@ -199,7 +198,6 @@ def main() -> int:
     """执行三路数据源对比。"""
     args = parse_args()
     disable_process_proxy_env()
-    install_requests_no_proxy()
 
     interval = normalize_interval(args.interval)
     reference_dt = parse_reference_time(args.reference)

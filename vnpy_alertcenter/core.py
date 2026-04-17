@@ -8,7 +8,6 @@ import os
 import sqlite3
 import subprocess
 import sys
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from enum import Enum
@@ -2037,9 +2036,7 @@ def fetch_eastmoney_minute_dataframe(
     local_start = ensure_china_tz(start_dt).replace(tzinfo=None)
     local_end = ensure_china_tz(end_dt).replace(tzinfo=None)
     market_code = 1 if symbol.startswith("6") else 0
-    session = requests.Session()
-    session.trust_env = False
-    session.headers.update(EASTMONEY_HEADERS)
+    session = create_direct_requests_session(EASTMONEY_HEADERS)
 
     if period == "1":
         url = "https://push2his.eastmoney.com/api/qt/stock/trends2/get"
@@ -2140,46 +2137,17 @@ def disable_process_proxy_env() -> list[str]:
     return cleared_keys
 
 
-def install_requests_no_proxy() -> bool:
-    """让当前项目进程里的 requests 永远忽略环境代理。"""
-    try:
-        import requests.sessions
-    except Exception:
-        return False
+def create_direct_requests_session(headers: dict[str, str] | None = None) -> requests.Session:
+    """创建仅供项目直连接口使用的 requests Session。
 
-    session_cls = requests.sessions.Session
-    if getattr(session_cls, "_vnpy_no_proxy_installed", False):
-        return False
-
-    original = session_cls.merge_environment_settings
-
-    def merge_environment_settings(self, url, proxies, stream, verify, cert):
-        settings = original(self, url, {}, stream, verify, cert)
-        settings["proxies"] = {}
-        return settings
-
-    session_cls.merge_environment_settings = merge_environment_settings
-    session_cls._vnpy_no_proxy_installed = True
-    return True
-
-
-@contextmanager
-def temporary_proxy_bypass():
-    """临时绕过代理执行网络请求，结束后恢复进程内其他环境变量。"""
-    saved_values: dict[str, str] = {}
-    for key in PROJECT_PROXY_ENV_KEYS:
-        value = os.environ.pop(key, None)
-        if value is not None:
-            saved_values[key] = value
-
-    try:
-        yield
-    finally:
-        os.environ.update(saved_values)
-
-
-# 模块加载时就把 requests 的环境代理读取关掉，避免 GUI 已启动后仍走旧代理。
-install_requests_no_proxy()
+    这里只在真正需要的请求路径上关闭环境代理，避免像之前那样全局 monkey-patch
+    整个进程里的 requests 行为，误伤其它未来可能加入的 HTTP 调用。
+    """
+    session = requests.Session()
+    session.trust_env = False
+    if headers:
+        session.headers.update(headers)
+    return session
 
 
 def build_minute_fetch_summary(

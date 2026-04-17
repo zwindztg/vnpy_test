@@ -13,7 +13,6 @@ from vnpy_alertcenter.core import (
     RunnerStatusData,
     SymbolStateData,
     disable_process_proxy_env,
-    install_requests_no_proxy,
     load_app_config,
 )
 
@@ -67,7 +66,6 @@ class ConsoleAlertApp:
 
 def main() -> int:
     cleared_proxy_keys = disable_process_proxy_env()
-    install_requests_no_proxy()
     if cleared_proxy_keys:
         print("提醒脚本已自动绕过代理：", ", ".join(cleared_proxy_keys), flush=True)
 

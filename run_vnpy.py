@@ -101,29 +101,6 @@ def disable_project_proxy_env() -> list[str]:
     return cleared_keys
 
 
-def install_project_requests_no_proxy() -> bool:
-    """让当前项目进程里的 requests 永远忽略环境代理。"""
-    try:
-        import requests.sessions
-    except Exception:
-        return False
-
-    session_cls = requests.sessions.Session
-    if getattr(session_cls, "_vnpy_no_proxy_installed", False):
-        return False
-
-    original = session_cls.merge_environment_settings
-
-    def merge_environment_settings(self, url, proxies, stream, verify, cert):
-        settings = original(self, url, {}, stream, verify, cert)
-        settings["proxies"] = {}
-        return settings
-
-    session_cls.merge_environment_settings = merge_environment_settings
-    session_cls._vnpy_no_proxy_installed = True
-    return True
-
-
 def normalize_a_share_vt_symbol(vt_symbol: str) -> str:
     """把常见的股票后缀别名统一转换成 vn.py 使用的交易所后缀。"""
     normalized = vt_symbol.strip().upper()
@@ -1424,7 +1401,6 @@ def sync_local_packages() -> None:
 
 def main() -> int:
     cleared_proxy_keys = disable_project_proxy_env()
-    install_project_requests_no_proxy()
     if cleared_proxy_keys:
         print("项目进程已自动绕过代理：", ", ".join(cleared_proxy_keys))
 

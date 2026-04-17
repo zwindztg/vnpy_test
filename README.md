@@ -58,12 +58,12 @@ python run_vnpy.py
 
 首次启动时，`vnpy` 会在工程目录下 `.vntrader/` 生成配置和日志目录。
 
-## AKShare 准实时监控（模块一/二/三/四）
+## 独立版 CTA 实时监控脚本
 
-如果你想先做“只提醒、不实盘”的最小闭环，可以直接运行独立脚本：
+如果你想先做“只提醒、不实盘”的最小闭环，也可以直接运行独立脚本：
 
 ```bash
-cd /Users/zezhang/Documents/codex/vnpy
+cd /Users/zezhang/Documents/codex/vnpy_test
 source .venv/bin/activate
 python scripts/akshare_realtime_alert.py
 ```
@@ -74,7 +74,7 @@ python scripts/akshare_realtime_alert.py
   - `601869.SSE`
   - `600000.SSE`
 - 默认使用 `1m` 周期
-- 每 `20` 秒轮询一次 `AKShare`
+- 每 `20` 秒轮询一次 `pytdx`
 - 每只股票可以单独选择监控策略：
   - `基础提醒策略（BasicAlertStrategy）`
   - `A股长仓学习策略（LessonAShareLongOnlyStrategy）`
@@ -88,7 +88,10 @@ python scripts/akshare_realtime_alert.py
 
 运行中可以通过 `Ctrl+C` 停止脚本。
 
-配置文件位于 [akshare_realtime_alert.json](/Users/zezhang/Documents/codex/vnpy/config/akshare_realtime_alert.json)，可以直接修改：
+脚本和 GUI 共用同一份提醒配置。配置文件默认位于 `.vntrader/config/akshare_realtime_alert.json`；
+如果该文件还不存在，系统会先回退到内置默认配置。你在 GUI 中保存过配置后，后续脚本也会读取这份文件。
+
+可以直接修改的核心字段有：
 
 - `interval`：当前提醒周期，支持 `1m`、`5m`、`15m`、`30m`
 - `poll_seconds`：轮询间隔秒数
@@ -209,6 +212,8 @@ python scripts/akshare_realtime_alert.py
 
 - `strategies/LessonDoubleMaStrategy`
 - `strategies/LessonAShareLongOnlyStrategy`
+- `strategies/LessonDonchianAShareStrategy`
+- `strategies/LessonVolumeBreakoutAShareStrategy`
 
 这是一个最小的双均线交叉策略，适合拿来理解 `vnpy` CTA 策略的基本结构：
 
@@ -221,9 +226,10 @@ python scripts/akshare_realtime_alert.py
 
 - 只会开多和平多，不会做空
 - 默认下单数量是 `100` 股，符合 A 股一手
-- 更适合配合 `000001.SZSE` 的 `d` 周期做入门回测
+- 更适合配合 `601869.SSE` 的 `d` 周期做入门回测
 
-`vnpy_ctastrategy` 会自动扫描当前工作目录下的 `strategies/`，所以这些策略在你启动 [run_vnpy.py](/Users/zezhang/Documents/codex/vnpy_test/run_vnpy.py) 后，应该能在 CTA 策略模块里直接看到。
+启动 [run_vnpy.py](/Users/zezhang/Documents/codex/vnpy_test/run_vnpy.py) 时，仓库里的 `strategies/*.py` 会自动同步到项目运行目录 `.vntrader/strategies/`。
+`CTA策略` 和 `CTA回测` 识别到的，是这份运行时目录里的策略文件。
 
 ## 回测这个示例策略
 
@@ -246,6 +252,14 @@ python scripts/akshare_realtime_alert.py
 python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt --index-url=https://pypi.doubanio.com/simple
+```
+
+## 运行测试
+
+当前仓库自带测试默认使用 `unittest`，不依赖 `pytest`。
+
+```bash
+.venv/bin/python -m unittest discover -s tests -q
 ```
 
 ## 数据源切换

@@ -7,6 +7,7 @@ from threading import Event as ThreadEvent
 
 from vnpy_alertcenter.core import (
     AlertCenterRunner,
+    ChartSnapshotData,
     DEFAULT_CONFIG_PATH,
     LogData,
     RecordData,
@@ -28,6 +29,7 @@ class ConsoleAlertApp:
             status_callback=self.on_status,
             record_callback=self.on_record,
             state_callback=self.on_state,
+            chart_callback=self.on_chart,
         )
         self.stop_event = ThreadEvent()
         self.last_status_message: str = ""
@@ -52,6 +54,10 @@ class ConsoleAlertApp:
 
     def on_state(self, data: SymbolStateData) -> None:
         """独立脚本默认不持续刷状态，避免终端噪音。"""
+        return
+
+    def on_chart(self, data: ChartSnapshotData) -> None:
+        """独立脚本不展示图表快照，这里保留空实现兼容共享内核。"""
         return
 
     def run(self) -> int:
